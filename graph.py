@@ -79,12 +79,15 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
         kids.setdefault(node.parent_id, []).append(eid)
     path = set(session.path_ids())
     outputs: dict[str, str] = {}
+    errors: dict[str, bool] = {}
     user_n: dict[str, int] = {}
     n_user = 0
     for eid in session.order:
         item = entries[eid].item
         if item.get("type") == "function_call_output":
-            outputs[str(item.get("call_id") or "")] = str(item.get("output") or "")
+            cid = str(item.get("call_id") or "")
+            outputs[cid] = str(item.get("output") or "")
+            errors[cid] = bool(item.get("is_error"))
         if _is_user(item):
             n_user += 1
             user_n[eid] = n_user
@@ -127,12 +130,12 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
             item = entries[cur].item
             if item.get("type") == "function_call":
                 batch, last = gather_tools(cur)
-                nodes = [_tool_node(i, entries[i].item, outputs, i in path) for i in batch]
+                nodes = [_tool_node(i, entries[i].item, outputs, errors, i in path) for i in batch]
                 for group in _tool_groups(nodes):
                     layers.append(GraphLayer(group))
                 nxt = visible_kids(last)
             else:
-                node = _entry_node(cur, entries[cur].item, user_n, outputs, cur in path)
+                node = _entry_node(cur, entries[cur].item, user_n, outputs, errors, cur in path)
                 if node is not None:
                     layers.append(GraphLayer([node]))
                 nxt = visible_kids(cur)
@@ -186,10 +189,11 @@ def _entry_node(
     item: dict[str, Any],
     user_n: dict[str, int],
     outputs: dict[str, str],
+    errors: dict[str, bool],
     on_path: bool,
 ) -> GraphNode | None:
     if item.get("type") == "function_call":
-        return _tool_node(eid, item, outputs, on_path)
+        return _tool_node(eid, item, outputs, errors, on_path)
     if _is_user(item):
         return _user_node(user_n.get(eid, 0), item, on_path=on_path, entry_id=eid)
     if _is_assistant(item):
@@ -200,7 +204,7 @@ def _entry_node(
     return None
 
 
-def _tool_node(eid: str, item: dict[str, Any], outputs: dict[str, str], on_path: bool) -> GraphNode:
+def _tool_node(eid: str, item: dict[str, Any], outputs: dict[str, str], errors: dict[str, bool], on_path: bool) -> GraphNode:
     calls = parse_function_calls([item])
     if not calls:
         return GraphNode(id=eid, kind="tool", title="tool", on_path=on_path)
@@ -215,7 +219,7 @@ def _tool_node(eid: str, item: dict[str, Any], outputs: dict[str, str], on_path:
         name=call.name,
         detail=_args_preview(args),
         result=result,
-        status=_status(result),
+        status=_status(result, errors.get(call.call_id, False)),
         call_id=call.call_id,
         args=args,
         on_path=on_path,
@@ -465,13 +469,14 @@ def _tool_groups(nodes: list[GraphNode]) -> list[list[GraphNode]]:
     return groups
 
 
-def _status(result: str) -> str:
+def _status(result: str, is_error: bool = False) -> str:
     low = result.lower()
     if "blocked by safety" in low:
         return "blocked"
-    if low.startswith("invalid arguments") or "error" in low[:40]:
-        return "error"
-    return "ok"
+    # Trust the structured is_error the loop persists on tool results; sniffing
+    # "error" in the output text mislabeled legit results like `read error.log`
+    # or `grep error` as errors.
+    return "error" if is_error else "ok"
 
 
 def _args_preview(args: dict[str, Any]) -> str:
