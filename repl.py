@@ -86,13 +86,6 @@ def slash_matches(prefix: str, words: Iterable[str] | None = None, *, limit: int
     return seen
 
 
-def slash_accept(buf: str, selected: int = 0, words: Iterable[str] | None = None) -> str:
-    matches = slash_matches(buf, words)
-    if not matches:
-        return buf
-    return matches[max(0, min(selected, len(matches) - 1))]
-
-
 def _pad(text: str, width: int) -> str:
     extra = width - style.display_width(text)
     if extra > 0:
