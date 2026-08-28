@@ -108,7 +108,7 @@ def rule_line(cols: int) -> str:
 def display_rows(text: str, cols: int | None = None) -> int:
     if not text:
         return 0
-    cols = cols or shutil.get_terminal_size(fallback=(80, 24)).columns
+    cols = cols or term_size()[1]
     cols = max(1, cols)
     rows = 0
     for line in text.split("\n"):
@@ -119,7 +119,7 @@ def display_rows(text: str, cols: int | None = None) -> int:
 
 def open_block_rows(body: str, cols: int | None = None) -> int:
     """Terminal rows used by `print(header)` plus a streamed body."""
-    cols = cols or shutil.get_terminal_size(fallback=(80, 24)).columns
+    cols = cols or term_size()[1]
     return 1 + max(1, display_rows(body, cols))
 
 
@@ -189,8 +189,8 @@ def replace_last_rows(row_count: int, new_text: str, *, reserved_bottom: int | N
         if payload:
             stream_write(payload)
         return
-    size = shutil.get_terminal_size(fallback=(80, 24))
-    limit = max(1, size.lines - max(0, reserved_bottom) - 1)
+    _rows, _cols = term_size()
+    limit = max(1, _rows - max(0, reserved_bottom) - 1)
     if row_count > limit:
         payload = "\r\n"
         if new_text:
