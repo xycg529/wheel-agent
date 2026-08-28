@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.context import estimate_item_tokens, estimate_items_tokens, estimate_tokens, tag_lines
+from wheel_agent.context import estimate_item_tokens, estimate_items_tokens, tag_lines
 from wheel_agent.model import ModelClient, extract_text, item_text
 from wheel_agent.types import Item, Usage
 

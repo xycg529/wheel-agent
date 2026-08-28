@@ -6,9 +6,8 @@ import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from wheel_agent.types import Decision, FunctionCall, SafetyVerdict
+from wheel_agent.types import FunctionCall, SafetyVerdict
 
 
 AskFn = Callable[[str], bool]

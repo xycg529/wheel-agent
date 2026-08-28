@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import select
 import signal
 import sys
@@ -24,9 +23,26 @@ from wheel_agent.repl import BusyPrompt, LineEditor, _read_key, completion_words
 from wheel_agent.refine import parse_auto_refine_every
 from wheel_agent.session import Session
 
+# Re-exported for main.py and the test seams (tests import wheel_agent.app and
+# touch app.print_transcript / app.ToolSnips / ...); __all__ keeps pyflakes honest
+# about which of these are intentional public names.
+__all__ = [
+    "LiveTurn",
+    "STATE",
+    "ToolSnips",
+    "_busy",
+    "_emit",
+    "_format_args",
+    "clip_tool_output",
+    "handle_expand",
+    "main",
+    "print_event",
+    "print_transcript",
+    "tool_output_label",
+]
+
 from wheel_agent.app.state import STATE
 from wheel_agent.app.commands import (
-    _tree_option,
     flush_jobs,
     handle_compact,
     handle_graph,
@@ -48,17 +64,13 @@ from wheel_agent.app.refine import (
 from wheel_agent.app.live import (
     LiveTurn,
     ToolSnips,
-    UI_TOOL_CHARS,
-    UI_TOOL_LINES,
     _busy,
     _emit,
-    _emit_clip,
     _format_args,
     _meter_text,
     _sync_plan_footer,
     clip_tool_output,
     handle_expand,
-    parse_tool_args,
     print_event,
     print_transcript,
     tool_output_label,

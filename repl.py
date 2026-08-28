@@ -332,7 +332,6 @@ def enter_busy_tty(fd: int):
     import termios
     import tty
 
-    old = termios.tcgetattr(fd)
     tty.setcbreak(fd)
     attrs = termios.tcgetattr(fd)
     attrs[3] &= ~termios.ISIG

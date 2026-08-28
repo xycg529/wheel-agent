@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from wheel_agent.config import ProviderConfig
-from wheel_agent.reasoning import clamp_effort, reasoning_payload
+from wheel_agent.reasoning import reasoning_payload
 from wheel_agent.types import APIError, Item, ModelResponse, Usage
 
 DeltaFn = Callable[[str, str], None]
