@@ -25,6 +25,14 @@ class ProviderConfig:
     api: str = "responses"  # responses | chat
 
 
+def provider_ready(provider: ProviderConfig) -> bool:
+    """A provider can serve when it has an API key, or when it points at a
+    local endpoint (localhost) that needs no auth — e.g. Ollama, LM Studio,
+    or the keyless mock server the PTY test scripts spin up. Centralized so
+    the check can't drift between the five call sites that used it inline."""
+    return bool(provider.api_key) or "localhost" in (provider.base_url or "")
+
+
 @dataclass
 class AgentConfig:
     provider: ProviderConfig

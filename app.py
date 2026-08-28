@@ -11,7 +11,7 @@ from pathlib import Path
 from wheel_agent import style
 from wheel_agent.checkpoint import CheckpointStore
 from wheel_agent.compact import SUMMARY_MARK, compact_history
-from wheel_agent.config import AgentConfig, load_config
+from wheel_agent.config import AgentConfig, load_config, provider_ready
 from wheel_agent.context import expand_skill_command, load_project_files, load_skills
 from wheel_agent.trust import ensure_project_trust
 from wheel_agent.atfiles import list_at_files
@@ -496,7 +496,7 @@ def run_task(
     queue: TurnQueue | None = None,
 ) -> None:
     global LIVE
-    if not config.provider.api_key and "localhost" not in config.provider.base_url:
+    if not provider_ready(config.provider):
         print(
             style.red(
                 f"provider {config.provider.name} has no API key. "
@@ -556,7 +556,7 @@ def run_task(
 
 def run_json_task(config: AgentConfig, task: str, workspace: Path) -> int:
     chat = Session.create(workspace)
-    if not config.provider.api_key and "localhost" not in config.provider.base_url:
+    if not provider_ready(config.provider):
         sys.stdout.write(
             json.dumps(
                 {"error": f"missing API key for {config.provider.name}", "stop_reason": "error"},
@@ -782,7 +782,7 @@ def handle_compact(config: AgentConfig, workspace: Path, session: Session) -> No
     if not session.items:
         print(style.dim("nothing to compact"))
         return
-    if not config.provider.api_key and "localhost" not in config.provider.base_url:
+    if not provider_ready(config.provider):
         print(style.red("compact needs a provider API key"))
         return
     model = make_client(config.provider, effort=config.effort, cache_key=session.cache_key)
@@ -982,7 +982,7 @@ def handle_refine(config: AgentConfig, workspace: Path, session: Session, rest: 
     if not session.items and not options.get("rollback_id"):
         print(style.dim("nothing to refine"))
         return
-    if not config.provider.api_key and "localhost" not in config.provider.base_url:
+    if not provider_ready(config.provider):
         print(style.red("refine needs a provider API key"))
         return
     model = make_client(config.provider, effort="off", cache_key=session.cache_key)
