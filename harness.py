@@ -6,6 +6,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from secrets import token_hex
 from typing import Any
 
 KINDS = ("prompt", "memory")
@@ -27,7 +28,10 @@ def slug(raw: str, fallback: str) -> str:
 
 
 def generate_refinement_id() -> str:
-    return "refine_" + datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")[:17]
+    # Random suffix: two harness tool calls in the same batch can land in the
+    # same millisecond, and colliding ids made _merge_history drop one record
+    # (and rollback target the wrong refinement).
+    return "refine_" + datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")[:17] + "_" + token_hex(2)
 
 
 @dataclass
@@ -96,7 +100,11 @@ def load_state(path: Path, scope: str = "local") -> HarnessState:
         return state
     if not isinstance(raw, dict):
         return state
-    state.schema = int(raw.get("schema") or 1)
+    state.schema = 1
+    try:
+        state.schema = int(raw.get("schema") or 1)
+    except (TypeError, ValueError):
+        pass  # corrupt schema value: degrade to v1 like other corrupt fields
     records = raw.get("entries") if isinstance(raw.get("entries"), dict) else {}
     for kind in KINDS:
         bucket = records.get(kind) if isinstance(records.get(kind), dict) else {}
@@ -420,7 +428,8 @@ class HarnessStore:
 
     def history_file(self, global_: bool) -> Path:
         state = self.global_state if global_ else self.local
-        assert state.path is not None
+        if state.path is None:  # public API allows path-less states; fail clearly, not with an assert
+            raise ValueError("harness state has no file path; cannot record history")
         return history_path(state.path)
 
     def record(self, result: dict[str, Any]) -> None:
