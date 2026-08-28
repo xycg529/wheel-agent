@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -9,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from wheel_agent.config import AgentConfig
-from wheel_agent.evalkit import CheckResult, EvalReport, TaskOutcome
+from wheel_agent.evalkit import CheckResult, EvalReport, TaskOutcome, eval_agent_config
 from wheel_agent.evals.swe_lite import DATASET, INSTANCE_IDS, INSTANCE_IDS_TINY
 from wheel_agent.loop import run_agent
 from wheel_agent.model import ModelClient
@@ -150,14 +149,7 @@ def evaluate_swe(
     except Exception as exc:
         outcomes = [TaskOutcome(iid, False, [], None, status="error") for iid in ids]
         return EvalReport(suite=f"swe-lite-{len(ids)}", outcomes=outcomes, status="error", error=str(exc))
-    eval_config = AgentConfig(
-        provider=config.provider,
-        providers=config.providers,
-        max_turns=config.max_turns if config.max_turns > 0 else int(os.getenv("MAX_TURNS") or "50"),
-        runs_dir=config.runs_dir,
-        interactive=False,
-        effort=config.effort,
-    )
+    eval_config = eval_agent_config(config, config.runs_dir, 50)
     outcomes: list[TaskOutcome] = []
     preds: list[dict[str, str]] = []
     for iid in ids:

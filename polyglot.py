@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from wheel_agent.config import AgentConfig
-from wheel_agent.evalkit import CheckResult, EvalReport, TaskOutcome
+from wheel_agent.evalkit import CheckResult, EvalReport, TaskOutcome, eval_agent_config
 from wheel_agent.evals.polyglot import CATALOGS, PYTHON_EXERCISES, REPO_URL
 from wheel_agent.loop import run_agent
 from wheel_agent.model import ModelClient
@@ -214,14 +214,7 @@ def evaluate_polyglot(
         return EvalReport(suite=suite, outcomes=outcomes, status="error", error=str(exc))
     root = Path(work_root) if work_root else default_work_root(lang)
     root.mkdir(parents=True, exist_ok=True)
-    eval_config = AgentConfig(
-        provider=config.provider,
-        providers=config.providers,
-        max_turns=config.max_turns if config.max_turns > 0 else int(os.getenv("MAX_TURNS") or "20"),
-        runs_dir=config.runs_dir,
-        interactive=False,
-        effort=config.effort,
-    )
+    eval_config = eval_agent_config(config, config.runs_dir, 20)
     progress = root / "progress.jsonl"
     outcomes: list[TaskOutcome] = []
     for name in names:

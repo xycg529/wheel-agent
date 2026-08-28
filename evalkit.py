@@ -1,8 +1,38 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
+from wheel_agent.config import AgentConfig
 from wheel_agent.types import RunResult
+
+
+def safe_int_env(name: str, default: int) -> int:
+    """int(os.environ[name]) that degrades to `default` on garbage instead of crashing an eval run."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+def eval_agent_config(base: AgentConfig, runs_dir: Path, default_max_turns: int) -> AgentConfig:
+    """Non-interactive config shared by the eval suites.
+
+    REPL/--json runs are unlimited (max_turns=0); eval suites cap at the
+    MAX_TURNS env value or the suite default (20 polyglot / 50 SWE).
+    """
+    return AgentConfig(
+        provider=base.provider,
+        providers=base.providers,
+        max_turns=base.max_turns if base.max_turns > 0 else safe_int_env("MAX_TURNS", default_max_turns),
+        runs_dir=runs_dir,
+        interactive=False,
+        effort=base.effort,
+    )
 
 
 @dataclass
