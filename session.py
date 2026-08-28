@@ -4,21 +4,16 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from wheel_agent.compact import SUMMARY_MARK, is_summary_item
-from wheel_agent.events import new_run_id
+from wheel_agent.events import _now, new_run_id
 from wheel_agent.plan import PlanStore
 from wheel_agent.types import Item, Usage
 
 SESSION_DIR = ".wheel/sessions"
 CURRENT_VERSION = 2
-
-
-def _now() -> str:
-    return datetime.now().astimezone().isoformat()
 
 
 def _nid() -> str:
