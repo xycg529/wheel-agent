@@ -619,18 +619,20 @@ def list_session_runs(session_id: str, runs_dir: str | Path | None) -> list[str]
 
 
 _http: ThreadingHTTPServer | None = None
-_http_thread: threading.Thread | None = None
 _http_root: Path | None = None
 
 
 def serve_graphs(directory: str | Path) -> str:
-    global _http, _http_thread, _http_root
+    global _http, _http_root
     root = Path(directory).resolve()
     root.mkdir(parents=True, exist_ok=True)
     if _http is not None:
-        _http_root = root
-        port = int(_http.server_address[1])
-        return f"http://127.0.0.1:{port}/"
+        if _http_root == root:
+            port = int(_http.server_address[1])
+            return f"http://127.0.0.1:{port}/"
+        # The handler's __init__ closure captured the *first* directory; a
+        # different root would 404 on the old server, so restart it.
+        stop_graph_server()
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -641,18 +643,16 @@ def serve_graphs(directory: str | Path) -> str:
 
     _http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     _http_root = root
-    _http_thread = threading.Thread(target=_http.serve_forever, name="wheel-graph-http", daemon=True)
-    _http_thread.start()
+    threading.Thread(target=_http.serve_forever, name="wheel-graph-http", daemon=True).start()
     atexit.register(stop_graph_server)
     port = int(_http.server_address[1])
     return f"http://127.0.0.1:{port}/"
 
 
 def stop_graph_server() -> None:
-    global _http, _http_thread, _http_root
+    global _http, _http_root
     server = _http
     _http = None
-    _http_thread = None
     _http_root = None
     if server is None:
         return
