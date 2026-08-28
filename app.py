@@ -899,8 +899,7 @@ def flush_auto_refine(config: AgentConfig, current: Session) -> bool:
             _emit(style.prefix_block("error  refine", str(item["error"]), style.red))
             continue
         target.usage.add(item["usage"])
-        target.cache_epoch += 1
-        target.persist(rewrite=True)
+        target.invalidate_cache()
         label, paint = ("ok", style.green) if item.get("applied") else ("skip", style.dim)
         _emit_clip("refine", label, item["text"], paint)
         if target is current:
@@ -1001,8 +1000,7 @@ def handle_refine(config: AgentConfig, workspace: Path, session: Session, rest: 
         FOOTER.paint()
         return
     session.usage.add(extra)
-    session.cache_epoch += 1
-    session.persist(rewrite=True)
+    session.invalidate_cache()
     applied = [row for row in result.get("appliedEdits") or [] if row.get("applied")]
     failed = [row for row in result.get("appliedEdits") or [] if not row.get("applied")]
     if failed and not applied:

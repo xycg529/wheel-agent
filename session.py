@@ -263,6 +263,12 @@ class Session:
         self.cache_epoch += 1
         self.items[:] = compacted
 
+    def invalidate_cache(self) -> None:
+        """History changed out-of-band (e.g. refine edits applied): bump the
+        cache epoch and rewrite the file so the next model call re-keys."""
+        self.cache_epoch += 1
+        self.persist(rewrite=True)
+
     def _sync_path_items(self, view: list[Item]) -> None:
         if self.overlay:
             return
