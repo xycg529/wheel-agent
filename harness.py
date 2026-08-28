@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import itertools
 import os
 import re
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -27,11 +29,19 @@ def slug(raw: str, fallback: str) -> str:
     return (normalized or fallback)[:80]
 
 
+_id_counter = itertools.count(1)
+_id_lock = threading.Lock()
+_PROC_NONCE = token_hex(2)
+
+
 def generate_refinement_id() -> str:
-    # Random suffix: two harness tool calls in the same batch can land in the
-    # same millisecond, and colliding ids made _merge_history drop one record
-    # (and rollback target the wrong refinement).
-    return "refine_" + datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")[:17] + "_" + token_hex(2)
+    # Two harness tool calls in one batch land in the same millisecond, so the
+    # timestamp alone is not unique: nonce (process) + counter (in-process)
+    # make collisions impossible where the history file is shared.
+    with _id_lock:
+        n = next(_id_counter)
+    stamp = datetime.now().astimezone().strftime("%Y%m%d%H%M%S%f")[:17]
+    return f"refine_{stamp}_{_PROC_NONCE}{n:04d}"
 
 
 @dataclass
