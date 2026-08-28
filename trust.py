@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-TRUST_FILE = Path.home() / ".wheel" / "trust.json"
 
 
 def trust_file(home: str | Path | None = None) -> Path:

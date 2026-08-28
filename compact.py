@@ -7,14 +7,10 @@ from typing import Any
 
 from wheel_agent.context import estimate_item_tokens, estimate_items_tokens, estimate_tokens, tag_lines
 from wheel_agent.model import ModelClient, extract_text
-from wheel_agent.truncate import spill_output
 from wheel_agent.types import Item, Usage
 
 RESERVE_TOKENS = 16_384
 KEEP_RECENT_TOKENS = 20_000
-MICRO_PROTECT_TOKENS = 20_000
-MICRO_MIN_FREE = 4_000
-MICRO_MIN_CHARS = 2_000
 SUMMARY_MARK = "[SESSION SUMMARY — not a user message]"
 
 
@@ -119,59 +115,6 @@ def find_user_cut_index(items: list[Item], keep_recent_tokens: int = KEEP_RECENT
         if _starts_valid_suffix(items[i]):
             return i
     return None
-
-
-def microcompact(
-    items: list[Item],
-    workspace: str | Path,
-    *,
-    protect_tokens: int = MICRO_PROTECT_TOKENS,
-    min_free_tokens: int = MICRO_MIN_FREE,
-    min_chars: int = MICRO_MIN_CHARS,
-) -> list[Item]:
-    if not items:
-        return items
-    protect_from = 0
-    accumulated = 0
-    for i in range(len(items) - 1, -1, -1):
-        accumulated += estimate_item_tokens(items[i])
-        if accumulated >= protect_tokens:
-            protect_from = i
-            break
-    candidates: list[int] = []
-    would_free = 0
-    for i, item in enumerate(items):
-        if i >= protect_from:
-            break
-        if item.get("type") != "function_call_output":
-            continue
-        output = str(item.get("output") or "")
-        if SUMMARY_MARK in output:
-            continue
-        if len(output) < min_chars:
-            continue
-        stub_tokens = estimate_tokens_for_stub(output)
-        would_free += max(estimate_item_tokens(item) - stub_tokens, 0)
-        candidates.append(i)
-    if would_free < min_free_tokens or not candidates:
-        return items
-    updated = list(items)
-    for i in candidates:
-        output = str(updated[i].get("output") or "")
-        spilled = spill_output(workspace, output)
-        try:
-            rel = str(spilled.resolve().relative_to(Path(workspace).resolve()))
-        except ValueError:
-            rel = str(spilled)
-        stub = f"[truncated tool output: {len(output)} chars. Full: {rel}]"
-        new_item = dict(updated[i])
-        new_item["output"] = stub
-        updated[i] = new_item
-    return updated
-
-
-def estimate_tokens_for_stub(output: str) -> int:
-    return estimate_tokens(f"[truncated tool output: {len(output)} chars. Full: .wheel/outputs/x.log]")
 
 
 def previous_summary(items: list[Item]) -> str:

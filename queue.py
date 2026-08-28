@@ -73,12 +73,3 @@ class TurnQueue:
         with self._lock:
             return self._ask
 
-    def clear(self) -> None:
-        with self._lock:
-            self._steer.clear()
-            self._follow.clear()
-            waiter = self._ask
-            self._ask = None
-        if waiter is not None:
-            waiter.resolve(False)
-        self.abort.clear()

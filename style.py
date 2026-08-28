@@ -267,7 +267,6 @@ class Footer:
         self.text = ""
         self.cwd = ""
         self.plan_lines: list[str] = []
-        self.drawn = False
         self._armed = False
         self._hooked = False
         self._pinned = 0
@@ -409,8 +408,7 @@ class Footer:
             global _ACTIVE_FOOTER
             if _ACTIVE_FOOTER is self:
                 _ACTIVE_FOOTER = None
-            self.drawn = False
-            sys.stdout.flush()
+                sys.stdout.flush()
 
     def set(self, text: str, *, cwd: str | None = None) -> None:
         self.text = text
@@ -508,7 +506,6 @@ class Footer:
         parts.append("\033[?7h")
         sys.stdout.write("".join(parts))
         sys.stdout.flush()
-        self.drawn = True
 
     def prompt_rule(self) -> str:
         cols = self._size()[1] if is_tty() else 40

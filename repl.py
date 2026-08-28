@@ -347,7 +347,6 @@ def enter_busy_tty(fd: int):
     attrs = termios.tcgetattr(fd)
     attrs[3] &= ~termios.ISIG
     termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
-    return old
 
 
 class BusyPrompt:

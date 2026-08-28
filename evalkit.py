@@ -49,7 +49,6 @@ class TaskOutcome:
     checks: list[CheckResult]
     run: RunResult | None
     status: str = "complete"
-    replay_resolved: bool | None = None
     replay_match: bool | None = None
     replay_status: str | None = None
 

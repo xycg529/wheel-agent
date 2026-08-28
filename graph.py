@@ -27,13 +27,11 @@ PARALLEL_TOOLS = {
 
 @dataclass
 class GraphNode:
-    id: str
     kind: str
     title: str
     detail: str = ""
     result: str = ""
     status: str = ""
-    call_id: str = ""
     name: str = ""
     args: dict[str, Any] = field(default_factory=dict)
     body: str = ""
@@ -192,10 +190,8 @@ def _entry_node(
     errors: dict[str, bool],
     on_path: bool,
 ) -> GraphNode | None:
-    if item.get("type") == "function_call":
-        return _tool_node(eid, item, outputs, errors, on_path)
     if _is_user(item):
-        return _user_node(user_n.get(eid, 0), item, on_path=on_path, entry_id=eid)
+        return _user_node(user_n.get(eid, 0), item, on_path=on_path)
     if _is_assistant(item):
         text = _item_plain_text(item).strip()
         if not text:
@@ -207,20 +203,18 @@ def _entry_node(
 def _tool_node(eid: str, item: dict[str, Any], outputs: dict[str, str], errors: dict[str, bool], on_path: bool) -> GraphNode:
     calls = parse_function_calls([item])
     if not calls:
-        return GraphNode(id=eid, kind="tool", title="tool", on_path=on_path)
+        return GraphNode(kind="tool", title="tool", on_path=on_path)
     call = calls[0]
     args = redact_tool_args(call.name, call.arguments)
     raw = outputs.get(call.call_id, "")
     result = redact_tool_output(call.name, call.arguments, raw)
     return GraphNode(
-        id=call.call_id or eid,
         kind="tool",
         title=call.name,
         name=call.name,
         detail=_args_preview(args),
         result=result,
         status=_status(result, errors.get(call.call_id, False)),
-        call_id=call.call_id,
         args=args,
         on_path=on_path,
     )
@@ -418,11 +412,10 @@ def _is_assistant(item: dict[str, Any]) -> bool:
 
 
 def _user_node(
-    n: int, item: dict[str, Any], *, on_path: bool = True, entry_id: str = ""
+    n: int, item: dict[str, Any], *, on_path: bool = True
 ) -> GraphNode:
     text = _item_plain_text(item)
     return GraphNode(
-        id=entry_id or f"u{n}",
         kind="user",
         title=f"user {n}",
         detail=preview_user_text(text, 120),
@@ -433,7 +426,6 @@ def _user_node(
 
 def _assistant_node(eid: str, text: str, *, on_path: bool = True) -> GraphNode:
     return GraphNode(
-        id=str(eid),
         kind="assistant",
         title="say",
         detail=preview_user_text(text, 160),

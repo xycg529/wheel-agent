@@ -304,7 +304,6 @@ def evaluate_polyglot(
             prepare_exercise(src, replay_ws, lang=lang)
             replay_result = replay_run(eval_config.runs_dir, result.run_id, replay_ws, interactive=False)[1]
             replay_ok, _ = run_tests(replay_ws, lang)
-            outcomes[-1].replay_resolved = replay_ok
             outcomes[-1].replay_status = replay_result.replay_status or "error"
             outcomes[-1].replay_match = outcomes[-1].replay_status == "exact"
     return EvalReport(suite=suite, outcomes=outcomes)
