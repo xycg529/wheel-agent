@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+# SWE-bench Lite official test split, sorted by instance_id, first 25.
+# Frozen so a tiny SWE run is reproducible without pulling the full dataset just to list ids.
+INSTANCE_IDS: tuple[str, ...] = (
+    "astropy__astropy-12907",
+    "astropy__astropy-14182",
+    "astropy__astropy-14365",
+    "astropy__astropy-14995",
+    "astropy__astropy-6938",
+    "astropy__astropy-7746",
+    "django__django-10914",
+    "django__django-10924",
+    "django__django-11001",
+    "django__django-11019",
+    "django__django-11039",
+    "django__django-11049",
+    "django__django-11099",
+    "django__django-11133",
+    "django__django-11179",
+    "django__django-11283",
+    "django__django-11422",
+    "django__django-11564",
+    "django__django-11583",
+    "django__django-11620",
+    "django__django-11630",
+    "django__django-11742",
+    "django__django-11797",
+    "django__django-11815",
+    "django__django-11848",
+)
+
+DATASET = "princeton-nlp/SWE-bench_Lite"
+
+# Default tiny set. Three Django issues from the frozen 25; full Lite is 300.
+INSTANCE_IDS_TINY: tuple[str, ...] = (
+    "django__django-10914",
+    "django__django-11001",
+    "django__django-11179",
+)
