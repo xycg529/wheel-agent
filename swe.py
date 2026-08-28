@@ -16,6 +16,8 @@ from wheel_agent.model import ModelClient
 from wheel_agent.replay import replay_run
 from wheel_agent.types import RunResult
 
+RUN_ID = "wheel"
+
 
 def load_lite_rows(ids: tuple[str, ...] | list[str] = INSTANCE_IDS) -> dict[str, dict[str, Any]]:
     try:
@@ -212,7 +214,9 @@ def evaluate_swe(
 
     pred_path = root / "predictions.jsonl"
     pred_path.write_text("".join(json.dumps(p) + "\n" for p in preds), encoding="utf-8")
-    eval_status, resolved, eval_error = _run_official_eval(pred_path, ids, root)
+    eval_status, resolved, eval_error = _run_official_eval(
+        pred_path, eval_config.provider.model, ids, root
+    )
     for outcome in outcomes:
         if eval_status != "complete":
             outcome.status = eval_status
@@ -223,10 +227,12 @@ def evaluate_swe(
 
 
 def _run_official_eval(
-    pred_path: Path, ids: tuple[str, ...], work_root: Path
+    pred_path: Path, model_name: str, ids: tuple[str, ...], work_root: Path
 ) -> tuple[str, set[str], str]:
     if shutil.which("docker") is None:
         return "unavailable", set(), "Docker is required for the official evaluator"
+    report_dir = work_root / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
         "-m",
@@ -238,7 +244,9 @@ def _run_official_eval(
         "--max_workers",
         "1",
         "--run_id",
-        "wheel",
+        RUN_ID,
+        "--report_dir",
+        str(report_dir),
         "--instance_ids",
         *ids,
     ]
@@ -246,10 +254,14 @@ def _run_official_eval(
         proc = subprocess.run(cmd, cwd=work_root, capture_output=True, text=True, timeout=60 * 60 * 6)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "error", set(), f"official evaluator failed to start: {exc}"
-    report_paths = list(work_root.glob("**/wheel*.json")) + list(Path.cwd().glob("**/wheel*.json"))
+    # The harness names the summary <model>.<run_id>.json inside --report_dir;
+    # the old '**/wheel*.json' glob from the caller's cwd never matched it.
     resolved: set[str] = set()
     parsed = False
-    for path in report_paths:
+    candidates = list(report_dir.glob(f"{model_name}.{RUN_ID}.json")) or list(
+        report_dir.glob(f"*.{RUN_ID}.json")
+    )
+    for path in candidates:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -258,6 +270,22 @@ def _run_official_eval(
             found, recognized = _resolved_from_report(data, ids)
             resolved.update(found)
             parsed = parsed or recognized
+    # Fallback for partial runs: per-instance reports under
+    # logs/run_evaluation/<run_id>/<model>/<instance_id>/report.json.
+    if not parsed:
+        log_root = work_root / "logs" / "run_evaluation" / RUN_ID
+        if log_root.is_dir():
+            for rep in log_root.glob("*/*/report.json"):
+                iid = rep.parent.name
+                if iid not in ids:
+                    continue
+                try:
+                    data = json.loads(rep.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(data, dict) and data.get("resolved"):
+                    resolved.add(iid)
+                    parsed = True
     if proc.returncode != 0:
         return "error", resolved, f"official evaluator exited with code {proc.returncode}"
     if not parsed:
