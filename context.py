@@ -8,7 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# Same precedence as Pi: override wins in that directory, then AGENTS.md, then CLAUDE.md.
+# Context-file precedence: the first name that exists in a directory wins —
+# AGENTS.override.md (per-directory override), then AGENTS.md, then CLAUDE.md;
+# the case variants keep working on case-insensitive filesystems.
 CONTEXT_NAMES = (
     "AGENTS.override.md",
     "AGENTS.md",

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Iterable
 
-# Unified scale from Pi ch.4. OpenAI Responses uses "none" instead of "off".
-# `max` is GLM/Zhipu's top tier; keep it distinct so .env lists are not rewritten to xhigh.
+# Unified reasoning-effort scale across providers. OpenAI Responses spells
+# "off" as "none". `max` is GLM/Zhipu's top tier; keep it distinct so .env
+# lists are not rewritten to xhigh.
 LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 ALIASES = {"none": "off", "x-high": "xhigh", "extra-high": "xhigh"}
 API_EFFORT = {
@@ -56,7 +57,7 @@ def infer_effort_levels(model: str) -> tuple[str, ...]:
 
 
 def clamp_effort(requested: str, supported: Iterable[str]) -> str | None:
-    """Pi clamp: if missing, search upward first, then downward. None = omit param."""
+    """If the requested level isn't supported, clamp upward first, then downward. None = omit the parameter."""
     allowed = tuple(normalize(item) for item in supported)
     allowed = tuple(item for item in allowed if item in LEVELS)
     if not allowed:
