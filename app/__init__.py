@@ -57,39 +57,6 @@ from wheel_agent.app.live import (
 
 
 
-class ToolSnips:
-    def __init__(self) -> None:
-        self.items: list[dict] = []
-        self._n = 0
-
-    def add(self, name: str, output: str, turn: object = None) -> dict:
-        self._n += 1
-        rec = {"n": self._n, "id": f"r{self._n}", "name": name, "output": output, "turn": turn}
-        self.items.append(rec)
-        if len(self.items) > 40:
-            self.items = self.items[-40:]
-        return rec
-
-    def get(self, spec: str | int | None = None) -> dict | None:
-        if not self.items:
-            return None
-        if spec is None or spec == "":
-            return self.items[-1]
-        key = str(spec).strip().lower()
-        if key in {"last", "l"}:
-            return self.items[-1]
-        rid = key[1:] if key.startswith("r") and key[1:].isdigit() else key
-        if rid.isdigit():
-            n = int(rid)
-            for rec in reversed(self.items):
-                if rec["n"] == n:
-                    return rec
-        return None
-
-
-
-
-STATE.snips = ToolSnips()
 
 
 HELP = """\
