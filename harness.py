@@ -89,6 +89,9 @@ def local_harness_path(
     workspace: str | Path,
     session_path: str | Path | None = None,
 ) -> Path:
+    # Per-session harness state lives right next to the session journal
+    # ("<session_id>.harness.json"); the history suffix swaps the extension
+    # back, so both files stay discoverable from either one.
     if session_path is not None:
         return Path(session_path).with_suffix(".harness.json")
     return Path(workspace).resolve() / ".wheel" / STATE_NAME
@@ -141,6 +144,9 @@ def save_state(state: HarnessState) -> Path | None:
         },
         "refinements": state.refinements,
     }
+    # write-to-tmp + replace: a crash mid-write leaves either the old file or
+    # the new one, never a torn JSON document (load_state degrades, but a
+    # partial file would lose every entry, not just fail to parse).
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -180,6 +186,8 @@ def merge_states(global_state: HarnessState, local_state: HarnessState | None) -
         for eid, entry in local_state.entries[kind].items():
             cloned = HarnessEntry(**asdict(entry))
             cloned.scope = "local"
+            # Same id in both scopes would collide in the merged dict; the
+            # local copy keeps it under a "local:" prefix so both survive.
             key = f"local:{eid}" if eid in merged.entries[kind] else eid
             merged.entries[kind][key] = cloned
     merged.refinements = list(global_state.refinements)
@@ -258,6 +266,9 @@ def apply_proposal(
         kind = str(edit["kind"])
         before = state.clone_entry(kind, edit_id)
         key = f"{kind}:{edit_id}"
+        # Optimistic concurrency: the refiner planned against `baseline`; if
+        # the entry changed since (another refinement ran meanwhile), reject
+        # the stale edit instead of clobbering the newer state.
         if baseline is not None and key not in seen:
             expected = baseline.clone_entry(kind, edit_id)
             current = asdict(before) if before else None
@@ -374,6 +385,8 @@ def rollback_proposal(target: dict[str, Any]) -> dict[str, Any]:
 
 
 def append_history(path: Path, result: dict[str, Any]) -> None:
+    # The refinement history is the journal rollbacks read back; fsync each
+    # line so a crash costs at most the in-flight refinement, not earlier ones.
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(result, ensure_ascii=False) + "\n")

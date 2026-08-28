@@ -512,15 +512,11 @@ class ResponsesClient:
         )
 
     def cancel(self) -> None:
+        # Closing the HTTP client on purpose, not just the stream: it is the
+        # only reliable way to abort a *stuck* non-streaming request (the
+        # socket close propagates to the request thread). Safe because a
+        # client instance is per-task and rebuilt after a cancel.
         stream = self._stream_obj
-        self._stream_obj = None
-        if stream is not None:
-            for closer in (getattr(stream, "close", None), getattr(getattr(stream, "response", None), "close", None)):
-                if callable(closer):
-                    try:
-                        closer()
-                    except Exception:
-                        pass
         closer = getattr(getattr(self, "client", None), "close", None)
         if callable(closer):
             try:
@@ -664,15 +660,11 @@ class ChatCompletionsClient:
         )
 
     def cancel(self) -> None:
+        # Closing the HTTP client on purpose, not just the stream: it is the
+        # only reliable way to abort a *stuck* non-streaming request (the
+        # socket close propagates to the request thread). Safe because a
+        # client instance is per-task and rebuilt after a cancel.
         stream = self._stream_obj
-        self._stream_obj = None
-        if stream is not None:
-            for closer in (getattr(stream, "close", None), getattr(getattr(stream, "response", None), "close", None)):
-                if callable(closer):
-                    try:
-                        closer()
-                    except Exception:
-                        pass
         closer = getattr(getattr(self, "client", None), "close", None)
         if callable(closer):
             try:

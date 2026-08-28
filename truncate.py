@@ -91,6 +91,9 @@ def apply(
     max_bytes: int = DEFAULT_MAX_BYTES,
     keep_prefix: str = "",
 ) -> str:
+    # keep_prefix: a header the caller re-attaches afterwards (e.g. the
+    # "path: …" line). Truncate the payload only, so the line/byte budget is
+    # spent on real output and the header survives verbatim.
     body = content
     if keep_prefix and content.startswith(keep_prefix):
         body = content[len(keep_prefix) :]

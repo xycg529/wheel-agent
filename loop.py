@@ -349,6 +349,9 @@ def run_agent(
 def _push(items: list[dict[str, Any]], session: Session | None, item: dict[str, Any]) -> None:
     items.append(item)
     if session is not None:
+        # to_view=False: `items` is session.items itself (aliased by
+        # run_agent) — the append above already updated the view; only the
+        # tree + file need the new entry.
         session.append_item(item, to_view=False)
         session.persist()
 

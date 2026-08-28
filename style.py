@@ -24,7 +24,12 @@ def is_tty() -> bool:
 
 
 def term_size() -> tuple[int, int]:
-    """(rows, cols) from the tty ioctl, not the stale COLUMNS env var."""
+    """(rows, cols) from the tty ioctl, not the stale COLUMNS env var.
+
+    Tries several fds because a pty/harness setup can leave stdin and stdout
+    on different devices (or one captured); the first one reporting a sane
+    size wins.
+    """
     fds: list[int] = []
     for stream in (sys.stdout, sys.stdin, sys.__stdout__, sys.__stdin__):
         fileno = getattr(stream, "fileno", None)

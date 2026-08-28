@@ -117,6 +117,8 @@ class Session:
                     continue
                 eid = str(entry.get("id") or _nid())
                 parent = entry.get("parent_id", entry.get("parentId"))
+                # v1 journals had no parent_id; reconstruct the linear chain
+                # from write order.
                 if parent is None and version == 1:
                     parent = prev_id
                 node = SessionEntry(id=eid, parent_id=str(parent) if parent else None, item=item)
@@ -168,6 +170,10 @@ class Session:
         session.items = session.view_items()
         extras = unpaired_function_call_outputs(session.items)
         if extras:
+            # A crash between dispatching a tool call and persisting its
+            # output leaves a call the API would reject on the next request;
+            # synthesize an "interrupted" outcome so the session resumes
+            # cleanly instead of 400-ing.
             for item in extras:
                 session.append_item(item, to_view=True)
             session.persist()
@@ -208,6 +214,10 @@ class Session:
         return cls.load(path)
 
     def append_item(self, item: Item, *, to_view: bool = True) -> str:
+        # The tree (entries/order/leaf) always records the item; the view
+        # (self.items) only when the caller hasn't already appended it there.
+        # run_agent aliases self.items as its live prompt list and appends to
+        # it directly, so its _push passes to_view=False to avoid doubling.
         eid = _nid()
         node = SessionEntry(id=eid, parent_id=self.leaf_id, item=item)
         self.entries[eid] = node
@@ -360,6 +370,11 @@ class Session:
         return removed
 
     def persist(self, rewrite: bool = False) -> None:
+        # Journal semantics: normally we APPEND only the entries past the
+        # _saved watermark (cheap, and a torn tail is recoverable on load).
+        # Rewrite the whole file when the history itself changed shape —
+        # a compact overlay, a branch/undo, or a brand-new file — because an
+        # append-only log can only grow, never re-shape.
         if not self.entries and not self.items:
             return
         if not self.entries and self.items:

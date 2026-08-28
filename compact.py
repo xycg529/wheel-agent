@@ -84,6 +84,12 @@ def _starts_valid_suffix(item: Item) -> bool:
 
 
 def find_user_cut_index(items: list[Item], keep_recent_tokens: int = KEEP_RECENT_TOKENS) -> int | None:
+    # Walk backward from the tail until we have budgeted keep_recent_tokens of
+    # *kept* history, then snap the cut forward to the next user boundary.
+    # Cutting only at user turns keeps the retained suffix a valid sequence
+    # (it can never start mid tool_call/tool_output pair, which the API
+    # rejects) and gives the summary a clean "everything before this user
+    # turn" contract.
     user_indices = [i for i, item in enumerate(items) if item.get("role") == "user"]
     if not user_indices:
         return None
@@ -196,6 +202,8 @@ def compact_history(
     usage = Usage()
     # Do not rewrite already-sent items (breaks prompt-cache prefixes).
     # A full compact replaces the prefix with a new summary and starts a new cache epoch.
+    # plan_text is a compatibility no-op: plan state now lives in Session.plan,
+    # not in the compacted history.
     del plan_text
     before_tokens = estimate_items_tokens(items)
     stats = CompactStats(
@@ -208,6 +216,8 @@ def compact_history(
     if force or should_compact(input_tokens, context_window):
         compacted, extra = compact_items(compacted, model, workspace, context_window=context_window)
         usage.add(extra)
+        # compact_items returns the *same list object* when it finds nothing
+        # to cut, so identity (not length) is the no-op signal.
         stats.did = compacted is not items
         stats.after_items = len(compacted)
         stats.after_tokens = estimate_items_tokens(compacted) if stats.did else before_tokens

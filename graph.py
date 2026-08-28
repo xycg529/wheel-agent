@@ -62,6 +62,8 @@ class GraphBlock:
 @dataclass
 class SessionGraph:
     session_id: str
+    # Linear view: the on-path branch flattened to layers. render_ascii draws
+    # this; the full branch structure stays in `tree` for /tree navigation.
     layers: list[GraphLayer]
     runs: list[str] = field(default_factory=list)
     tree: GraphBlock = field(default_factory=GraphBlock)
@@ -92,6 +94,10 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
             user_n[eid] = n_user
 
     def passthrough(item: dict[str, Any]) -> bool:
+        # Invisible nodes: tool outputs, thinking, and empty assistant text
+        # carry no flow information, so the walk descends through them and
+        # promotes their children — the graph shows conversation flow, not
+        # the raw API item list.
         kind = item.get("type")
         if kind in {"function_call_output", "reasoning", "thinking"}:
             return True
@@ -112,6 +118,9 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
         return found
 
     def gather_tools(start: str) -> tuple[list[str], str]:
+        # A run of single-child function_call items is one assistant turn
+        # (possibly parallel tool calls); batch them into a single graph layer
+        # instead of a vertical chain of boxes.
         batch = [start]
         cur = start
         while True:

@@ -44,6 +44,9 @@ SLASH_CATALOG: tuple[tuple[str, str, str], ...] = (
 )
 
 COMMANDS = tuple(cmd for cmd, _summary, _usage in SLASH_CATALOG) + (
+    # Bare words mirror the slash commands above (the dispatch accepts both
+    # "/quit" and "quit") — keep this list in sync with SLASH_CATALOG and the
+    # dispatch table in app.main.
     "help",
     "quit",
     "exit",
@@ -280,6 +283,9 @@ def _read_key(fd: int, timeout: float | None = None) -> str | None:
     ch = first.decode("latin1")
     if ch != "\x1b":
         return ch
+    # ESC disambiguation: a standalone ESC arrives alone; the next byte of an
+    # arrow/CSI sequence follows within a few ms, so a 30ms window separates
+    # the two.
     nxt = _read_byte(fd, timeout=0.03)
     if not nxt:
         return "esc"
@@ -526,6 +532,10 @@ class LineEditor:
                     palette_rows = self._draw_line(buf, matches, selected, palette_rows, cur=cur)
                     continue
                 if key in {"\r", "\n"}:
+                    # Shift+Enter (and some terminals' Enter) sends \r\n: the
+                    # \n may land a few ms after the \r, so peek with a 20ms
+                    # window; if a second byte is coming this is a newline
+                    # edit, not a submit. A real Enter is a lone \r.
                     if key == "\r":
                         nxt = unread.pop(0) if unread else _read_key(fd, timeout=0)
                         if nxt is not None and nxt != "\n":
@@ -659,6 +669,9 @@ class LineEditor:
             return []
 
     def _cursor_row(self) -> int | None:
+        # DSR (\033[6n) only works against a real terminal; a pipe or pty
+        # capture would never answer (and a stray query could leak into a
+        # test harness's input), so non-tty callers get None.
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             return None
         return query_cursor_row(sys.stdin.fileno())

@@ -94,6 +94,13 @@ def parse_refine_args(args: str) -> dict[str, Any]:
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
+    """Recover the refiner's JSON object from its reply.
+
+    Fallback chain: ```json fence → whole-text object → first-{ to last-}
+    window. Models routinely wrap the object in prose; the window parse is
+    the last resort before giving up (or asking for the missing tail in
+    _complete_json).
+    """
     trimmed = (text or "").strip()
     if not trimmed:
         raise ValueError("refiner returned no text")
@@ -242,6 +249,9 @@ def _edit_text(row: dict[str, Any]) -> tuple[str, str]:
 
 
 def _complete_json(model: ModelClient, prompt: str) -> tuple[str, Usage]:
+    # Refinement is housekeeping: always run it with reasoning effort off,
+    # regardless of the session's setting, and restore it afterwards (the
+    # model client is shared with the main loop).
     old_effort = getattr(model, "effort", None)
     if old_effort is not None:
         model.effort = "off"

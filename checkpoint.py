@@ -52,12 +52,16 @@ class CheckpointStore:
             except OSError:
                 return None
             if size > MAX_BYTES:
+                # Huge files aren't checkpointed: a full-content snapshot would
+                # balloon .wheel/checkpoints and rollback gains are marginal.
                 return None
             try:
                 data = path.read_bytes()
             except OSError:
                 return None
             if b"\0" in data[:8192]:
+                # Binary sniff: a NUL in the first 8KB means non-text; storing
+                # it as a replaced-UTF8 string would corrupt it on restore.
                 return None
             content = data.decode("utf-8", errors="replace")
         elif path.exists():
@@ -67,6 +71,8 @@ class CheckpointStore:
         (self.dir / f"{cid}.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
         stack = self._load_stack()
         stack.append(cid)
+        # Bound the undo stack: 200 snapshots is plenty of undo depth, and a
+        # long session with thousands of edits must not grow it unboundedly.
         self._save_stack(stack[-200:])
         if task_id:
             tasks = self._load_tasks()
