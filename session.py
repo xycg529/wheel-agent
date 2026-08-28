@@ -175,18 +175,21 @@ class Session:
         return session
 
     @classmethod
+    def _session_files(cls, workspace: str | Path) -> list[Path]:
+        """Session files, newest first (mtime order)."""
+        return sorted(session_dir(workspace).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    @classmethod
     def latest(cls, workspace: str | Path) -> "Session | None":
-        files = sorted(session_dir(workspace).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for path in files:
+        for path in cls._session_files(workspace):
             if not cls.file_is_empty(path):
                 return cls.load(path)
         return None
 
     @classmethod
     def list_previews(cls, workspace: str | Path, width: int = 48) -> list[tuple[str, str]]:
-        files = sorted(session_dir(workspace).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         rows: list[tuple[str, str]] = []
-        for path in files:
+        for path in cls._session_files(workspace):
             preview = first_user_preview_from_path(path, width)
             if preview == "(empty)":
                 continue
