@@ -285,8 +285,8 @@ def run_agent(
                     **stats.as_dict(),
                     epoch=session.cache_epoch if session is not None else 0,
                 )
-        except APIError as exc:
-            bus.emit("error", message=f"compact skipped: {exc}", transient=exc.transient)
+        except Exception as exc:  # broad: a compact hiccup must never discard a finished run
+            bus.emit("error", message=f"compact skipped: {exc}", transient=getattr(exc, "transient", False))
 
     final_manifest = workspace_manifest(ws.root)
     final_workspace_fingerprint = workspace_fingerprint(final_manifest)
