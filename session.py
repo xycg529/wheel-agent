@@ -9,6 +9,7 @@ from typing import Any
 
 from wheel_agent.compact import is_summary_item
 from wheel_agent.events import _now, new_run_id
+from wheel_agent.model import item_text
 from wheel_agent.plan import PlanStore
 from wheel_agent.types import Item, Usage
 
@@ -443,21 +444,6 @@ class Session:
         return sum(1 for item in self.items if item.get("role") == "user" and not is_summary_item(item))
 
 
-def _item_plain_text(item: Item) -> str:
-    content = item.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                chunks.append(str(part.get("text") or part.get("output_text") or ""))
-            else:
-                chunks.append(str(part))
-        return "".join(chunks)
-    return str(content or "")
-
-
 def preview_user_text(text: str, width: int = 48) -> str:
     body = (text or "").strip()
     if body.startswith("<skill"):
@@ -523,7 +509,7 @@ def first_user_preview_from_path(path: Path, width: int = 48) -> str:
         item = entry.get("item") or {}
         if item.get("role") != "user":
             continue
-        text = _item_plain_text(item)
+        text = item_text(item)
         if is_summary_item(item):
             continue
         return preview_user_text(text, width)

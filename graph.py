@@ -11,7 +11,8 @@ from typing import Any
 
 from wheel_agent.audit import redact_tool_args, redact_tool_output
 from wheel_agent.compact import is_summary_item
-from wheel_agent.session import Session, _item_plain_text, preview_user_text
+from wheel_agent.model import item_text
+from wheel_agent.session import Session, preview_user_text
 from wheel_agent.tools import parse_function_calls
 
 PARALLEL_TOOLS = {
@@ -97,7 +98,7 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
         if kind == "function_call" or _is_user(item):
             return False
         if _is_assistant(item):
-            return not _item_plain_text(item).strip()
+            return not item_text(item).strip()
         return True
 
     def visible_kids(eid: str) -> list[str]:
@@ -193,7 +194,7 @@ def _entry_node(
     if _is_user(item):
         return _user_node(user_n.get(eid, 0), item, on_path=on_path)
     if _is_assistant(item):
-        text = _item_plain_text(item).strip()
+        text = item_text(item).strip()
         if not text:
             return None
         return _assistant_node(eid, text, on_path=on_path)
@@ -412,7 +413,7 @@ def _is_assistant(item: dict[str, Any]) -> bool:
 def _user_node(
     n: int, item: dict[str, Any], *, on_path: bool = True
 ) -> GraphNode:
-    text = _item_plain_text(item)
+    text = item_text(item)
     return GraphNode(
         kind="user",
         title=f"user {n}",

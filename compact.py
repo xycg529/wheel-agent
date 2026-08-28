@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from wheel_agent.context import estimate_item_tokens, estimate_items_tokens, estimate_tokens, tag_lines
-from wheel_agent.model import ModelClient, extract_text
+from wheel_agent.model import ModelClient, extract_text, item_text
 from wheel_agent.types import Item, Usage
 
 RESERVE_TOKENS = 16_384
@@ -263,20 +263,11 @@ def _ensure_file_tags(summary: str, read_files: list[str], modified_files: list[
 
 
 def _item_text(item: Item) -> str:
-    content = item.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                chunks.append(str(part.get("text") or part.get("output_text") or ""))
-            else:
-                chunks.append(str(part))
-        return "".join(chunks)
-    if item.get("output"):
+    """model.item_text plus the function_call_output fallback those items carry in 'output'."""
+    text = item_text(item)
+    if not text and item.get("output"):
         return str(item["output"])
-    return ""
+    return text
 
 
 def _unique(values: list[str]) -> list[str]:

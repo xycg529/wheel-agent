@@ -20,7 +20,7 @@ from wheel_agent.harness import HarnessStore, format_harness_for_prompt
 from wheel_agent.loop import run_agent
 from wheel_agent.markdown import render_markdown
 from wheel_agent.meter import compact_count, format_meter
-from wheel_agent.model import make_client, extract_text, extract_thinking
+from wheel_agent.model import make_client, extract_text, extract_thinking, item_text
 from wheel_agent.queue import TurnQueue
 from wheel_agent.reasoning import clamp_effort, normalize, reasoning_payload
 from wheel_agent.repl import BusyPrompt, LineEditor, _read_key, completion_words, enter_busy_tty, is_busy_abort_key, pick_list, query_cursor_row
@@ -34,7 +34,7 @@ from wheel_agent.refine import (
     run_refine,
 )
 from wheel_agent.tools import drain_job_events, format_jobs, kill_job
-from wheel_agent.session import Session, _item_plain_text
+from wheel_agent.session import Session
 
 FOOTER = style.Footer()
 LIVE = None  # set per turn
@@ -653,7 +653,7 @@ def print_transcript(session: Session) -> None:
                 _emit(style.frame("think", render_markdown(body), paint=style.magenta))
             continue
         if role == "user":
-            text = _item_plain_text(item)
+            text = item_text(item)
             if is_summary_item(item):
                 _emit(style.prefix_block("summary", text.replace(SUMMARY_MARK, "").strip() or "compacted", style.dim))
             else:
@@ -684,7 +684,7 @@ def print_transcript(session: Session) -> None:
         think = extract_thinking([item])
         text = extract_text([item])
         if not text and role == "assistant":
-            text = _item_plain_text(item)
+            text = item_text(item)
         if think:
             _emit(style.frame("think", render_markdown(think), paint=style.magenta))
         if text:
