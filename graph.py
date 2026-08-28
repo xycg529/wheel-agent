@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from wheel_agent.audit import redact_tool_args, redact_tool_output
-from wheel_agent.compact import SUMMARY_MARK
+from wheel_agent.compact import is_summary_item
 from wheel_agent.session import Session, _item_plain_text, preview_user_text
 from wheel_agent.tools import parse_function_calls
 
@@ -400,9 +400,7 @@ def write_html(graph: SessionGraph, workspace: str | Path) -> Path:
 
 
 def _is_user(item: dict[str, Any]) -> bool:
-    if item.get("role") != "user":
-        return False
-    return SUMMARY_MARK not in str(item.get("content") or "")
+    return item.get("role") == "user" and not is_summary_item(item)
 
 
 def _is_assistant(item: dict[str, Any]) -> bool:

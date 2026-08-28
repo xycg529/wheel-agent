@@ -10,7 +10,7 @@ from pathlib import Path
 
 from wheel_agent import style
 from wheel_agent.checkpoint import CheckpointStore
-from wheel_agent.compact import SUMMARY_MARK, compact_history
+from wheel_agent.compact import SUMMARY_MARK, compact_history, is_summary_item
 from wheel_agent.config import AgentConfig, load_config, provider_ready
 from wheel_agent.context import expand_skill_command, load_project_files, load_skills
 from wheel_agent.trust import ensure_project_trust
@@ -654,7 +654,7 @@ def print_transcript(session: Session) -> None:
             continue
         if role == "user":
             text = _item_plain_text(item)
-            if SUMMARY_MARK in text:
+            if is_summary_item(item):
                 _emit(style.prefix_block("summary", text.replace(SUMMARY_MARK, "").strip() or "compacted", style.dim))
             else:
                 user_n += 1

@@ -237,7 +237,7 @@ class Session:
         if not compacted:
             self.items = compacted
             return
-        summary = compacted[0] if is_summary_item(compacted[0]) or SUMMARY_MARK in str(compacted[0].get("content") or "") else None
+        summary = compacted[0] if is_summary_item(compacted[0]) else None
         if summary is None:
             self._sync_path_items(compacted)
             self.items[:] = compacted
@@ -294,7 +294,7 @@ class Session:
             if item.get("role") != "user":
                 continue
             text = str(item.get("content") or "")
-            if SUMMARY_MARK in text:
+            if is_summary_item(item):
                 label = "(summary)"
             else:
                 label = text.replace("\n", " ")[:80]
@@ -524,7 +524,7 @@ def first_user_preview_from_path(path: Path, width: int = 48) -> str:
         if item.get("role") != "user":
             continue
         text = _item_plain_text(item)
-        if SUMMARY_MARK in text:
+        if is_summary_item(item):
             continue
         return preview_user_text(text, width)
     return "(empty)"
