@@ -14,6 +14,7 @@ from wheel_agent.evalkit import CheckResult, EvalReport, TaskOutcome, eval_agent
 from wheel_agent.evals.polyglot import CATALOGS, PYTHON_EXERCISES, REPO_URL
 from wheel_agent.loop import run_agent
 from wheel_agent.model import ModelClient
+from wheel_agent.types import RunResult
 
 DISABLED = re.compile(r'\n[ \t]*@Disabled\("Remove to run test"\)[ \t]*')
 JAVA_HOME = Path.home() / ".sdkman" / "candidates" / "java" / "current"
@@ -140,13 +141,17 @@ def java_env() -> dict[str, str]:
 
 
 def run_python_tests(dest: Path, timeout: int = 60) -> tuple[bool, str]:
-    proc = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", str(dest), "-p", "*_test.py", "-q"],
-        cwd=dest,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "unittest", "discover", "-s", str(dest), "-p", "*_test.py", "-q"],
+            cwd=dest,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        # A hung test run fails this task; it must not take down the whole eval.
+        return False, f"test run timed out after {timeout}s"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     return proc.returncode == 0, out[-2000:]
 
@@ -159,14 +164,18 @@ def run_java_tests(dest: Path, timeout: int = 300) -> tuple[bool, str]:
     java_bin = Path(env.get("JAVA_HOME", "")) / "bin" / "java"
     if not java_bin.is_file() and not shutil.which("java", path=env.get("PATH")):
         return False, "java not found (install a JDK or SDKMAN 17)"
-    proc = subprocess.run(
-        [str(gradlew), "test", "--rerun-tasks"],
-        cwd=dest,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            [str(gradlew), "test", "--rerun-tasks"],
+            cwd=dest,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        # Gradle can hang on its daemon; fail this task, keep the eval going.
+        return False, f"test run timed out after {timeout}s"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     return proc.returncode == 0, out[-2000:]
 
@@ -227,47 +236,68 @@ def evaluate_polyglot(
     for name in names:
         src = exercise_src(repo, name, lang)
         live = root / name / "live"
-        prepare_exercise(src, live, lang=lang)
-        prompt = task_prompt(name, read_instructions(src), lang)
-        protected_before = protected_tests_fingerprint(live, lang)
-        result = run_agent(
-            prompt,
-            live,
-            eval_config,
-            model,
-            extra_meta={"suite": suite, "task_id": name, "lang": lang},
-        )
-        ok, detail = run_tests(live, lang)
-        tests_unchanged = protected_tests_fingerprint(live, lang) == protected_before
-        if not tests_unchanged:
-            ok = False
-            detail = (detail + "\n" if detail else "") + "protected test files changed"
-        outcome = TaskOutcome(
-            task_id=name,
-            resolved=ok,
-            checks=[
-                CheckResult("tests", ok, detail or "ok"),
-                CheckResult("protected_tests_unchanged", tests_unchanged, "ok" if tests_unchanged else "tests changed"),
-            ],
-            run=result,
-        )
-        outcomes.append(outcome)
-        progress.open("a", encoding="utf-8").write(
-            json.dumps(
-                {
-                    "task_id": name,
-                    "resolved": ok,
-                    "tests_unchanged": tests_unchanged,
-                    "stop_reason": result.stop_reason,
-                    "turns": result.turns,
-                    "run_id": result.run_id,
-                },
-                ensure_ascii=False,
+        result: RunResult | None = None
+        ok = False
+        detail = ""
+        tests_unchanged = True
+        try:
+            prepare_exercise(src, live, lang=lang)
+            prompt = task_prompt(name, read_instructions(src), lang)
+            protected_before = protected_tests_fingerprint(live, lang)
+            result = run_agent(
+                prompt,
+                live,
+                eval_config,
+                model,
+                extra_meta={"suite": suite, "task_id": name, "lang": lang},
             )
-            + "\n"
+            ok, detail = run_tests(live, lang)
+            tests_unchanged = protected_tests_fingerprint(live, lang) == protected_before
+            if not tests_unchanged:
+                ok = False
+                detail = (detail + "\n" if detail else "") + "protected test files changed"
+            outcome = TaskOutcome(
+                task_id=name,
+                resolved=ok,
+                checks=[
+                    CheckResult("tests", ok, detail or "ok"),
+                    CheckResult("protected_tests_unchanged", tests_unchanged, "ok" if tests_unchanged else "tests changed"),
+                ],
+                run=result,
+            )
+        except Exception as exc:
+            # One broken exercise (workspace prep, provider crash, hung test)
+            # must not discard the outcomes collected so far.
+            outcome = TaskOutcome(
+                task_id=name,
+                resolved=False,
+                checks=[CheckResult("runner", False, str(exc))],
+                run=result,
+                status="error",
+            )
+        outcomes.append(outcome)
+        with progress.open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "task_id": name,
+                        "resolved": ok,
+                        "tests_unchanged": tests_unchanged,
+                        "stop_reason": result.stop_reason if result else "",
+                        "turns": result.turns if result else 0,
+                        "run_id": result.run_id if result else "",
+                        "status": outcome.status,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+        print(
+            f"[{'PASS' if ok else 'FAIL'}] {name} "
+            f"turns={result.turns if result else 0} {result.stop_reason if result else outcome.status}",
+            flush=True,
         )
-        print(f"[{'PASS' if ok else 'FAIL'}] {name} turns={result.turns} {result.stop_reason}", flush=True)
-        if replay and result.run_id:
+        if replay and outcome.status == "complete" and result is not None and result.run_id:
             from wheel_agent.replay import replay_run
 
             replay_ws = root / name / "replay"
