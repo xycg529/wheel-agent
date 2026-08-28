@@ -138,6 +138,15 @@ def _fd_pending(fd: int, timeout: float = 0.0) -> bool:
     return bool(ready)
 
 
+def _utf8_len(lead: int) -> int:
+    """Continuation bytes needed for a UTF-8 lead byte."""
+    if lead & 0xF0 == 0xE0:
+        return 2
+    if lead & 0xF8 == 0xF0:
+        return 3
+    return 1
+
+
 def _read_byte(fd: int, timeout: float | None = None) -> bytes | None:
     if timeout is not None and not _fd_pending(fd, timeout):
         return None
@@ -183,18 +192,7 @@ def enter_submits(*, pasting: bool, more_input: bool) -> bool:
 def editor_visual(buf: str, cur: int, prompt_w: int, usable: int) -> tuple[list[str], int, int]:
     inner = max(1, usable - prompt_w)
     parts = buf.split("\n")
-    remain = max(0, min(cur, len(buf)))
-    line_i = 0
-    col = 0
-    for i, part in enumerate(parts):
-        if remain <= len(part):
-            line_i = i
-            col = remain
-            break
-        remain -= len(part) + 1
-    else:
-        line_i = max(0, len(parts) - 1)
-        col = len(parts[line_i]) if parts else 0
+    line_i, col = _cursor_pos(buf, cur)
     rows: list[str] = []
     cur_row = 0
     cur_col = prompt_w
@@ -215,22 +213,22 @@ def editor_visual(buf: str, cur: int, prompt_w: int, usable: int) -> tuple[list[
     return rows, cur_row, cur_col
 
 
-def cursor_vert(buf: str, cur: int, delta: int) -> int | None:
+def _cursor_pos(buf: str, cur: int) -> tuple[int, int]:
+    """(line, col) of cursor offset `cur` within `buf`."""
     parts = buf.split("\n")
-    if len(parts) < 2:
-        return None
     remain = max(0, min(cur, len(buf)))
-    line_i = 0
-    col = 0
     for i, part in enumerate(parts):
         if remain <= len(part):
-            line_i = i
-            col = remain
-            break
+            return i, remain
         remain -= len(part) + 1
-    else:
-        line_i = len(parts) - 1
-        col = len(parts[-1]) if parts else 0
+    return len(parts) - 1, len(parts[-1])
+
+
+def cursor_vert(buf: str, cur: int, delta: int) -> int | None:
+    if "\n" not in buf:
+        return None
+    line_i, col = _cursor_pos(buf, cur)
+    parts = buf.split("\n")
     dest = line_i + delta
     if dest < 0 or dest >= len(parts):
         return None
@@ -272,15 +270,8 @@ def _read_key(fd: int, timeout: float | None = None) -> str | None:
     if first == b"":
         return "\x04"
     if first[0] & 0x80:
-        extra = 1
-        if first[0] & 0xE0 == 0xC0:
-            extra = 1
-        elif first[0] & 0xF0 == 0xE0:
-            extra = 2
-        elif first[0] & 0xF8 == 0xF0:
-            extra = 3
         rest = b""
-        while len(rest) < extra:
+        while len(rest) < _utf8_len(first[0]):
             chunk = _read_byte(fd)
             if not chunk:
                 break
@@ -297,15 +288,8 @@ def _read_key(fd: int, timeout: float | None = None) -> str | None:
         return "esc"
     if nxt_byte & 0x80:
         # ESC + UTF-8 lead byte: Alt+non-ASCII. Decode the full character.
-        extra = 1
-        if nxt_byte & 0xE0 == 0xC0:
-            extra = 1
-        elif nxt_byte & 0xF0 == 0xE0:
-            extra = 2
-        elif nxt_byte & 0xF8 == 0xF0:
-            extra = 3
         rest = b""
-        while len(rest) < extra:
+        while len(rest) < _utf8_len(nxt_byte):
             chunk = _read_byte(fd)
             if not chunk:
                 break
@@ -523,11 +507,8 @@ class LineEditor:
                     key = _read_key(fd, timeout=0.12)
                 if key is None:
                     if self.on_idle and self.on_idle():
-                        matches = self._palette(buf, cur, pasting=pasting)
-                        if selected >= len(matches):
-                            selected = 0
-                        palette_rows = self._draw_line(
-                            buf, matches, selected, palette_rows, wipe=True, cur=cur
+                        selected, palette_rows = self._refresh_palette(
+                            buf, cur, selected, palette_rows, pasting, wipe=True
                         )
                     continue
                 if key == "\x03":
@@ -642,14 +623,26 @@ class LineEditor:
                     cur += 1
                     selected = 0
                     hist_i = len(history)
-                matches = self._palette(buf, cur, pasting=pasting)
-                if selected >= len(matches):
-                    selected = 0
-                palette_rows = self._draw_line(buf, matches, selected, palette_rows, cur=cur)
+                selected, palette_rows = self._refresh_palette(buf, cur, selected, palette_rows, pasting)
         finally:
             sys.stdout.write("\033[?2004l")
             sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def _refresh_palette(
+        self,
+        buf: str,
+        cur: int,
+        selected: int,
+        palette_rows: int,
+        pasting: bool,
+        *,
+        wipe: bool = False,
+    ) -> tuple[int, int]:
+        matches = self._palette(buf, cur, pasting=pasting)
+        if selected >= len(matches):
+            selected = 0
+        return selected, self._draw_line(buf, matches, selected, palette_rows, wipe=wipe, cur=cur)
 
     def _history_lines(self) -> list[str]:
         if self.available:
