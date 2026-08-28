@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.compact import SUMMARY_MARK, is_summary_item
+from wheel_agent.compact import is_summary_item
 from wheel_agent.events import _now, new_run_id
 from wheel_agent.plan import PlanStore
 from wheel_agent.types import Item, Usage
@@ -440,7 +440,7 @@ class Session:
         return json.dumps(payload, ensure_ascii=False) + "\n"
 
     def user_turns(self) -> int:
-        return sum(1 for item in self.items if item.get("role") == "user" and SUMMARY_MARK not in str(item.get("content") or ""))
+        return sum(1 for item in self.items if item.get("role") == "user" and not is_summary_item(item))
 
 
 def _item_plain_text(item: Item) -> str:
