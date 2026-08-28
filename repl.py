@@ -510,6 +510,7 @@ class LineEditor:
         unread: list[str] = []
         history = self._history_lines()
         hist_i = len(history)
+        original: str | None = None
         try:
             tty.setraw(fd)
             sys.stdout.write("\033[?2004h")
@@ -611,6 +612,8 @@ class LineEditor:
                     elif moved is not None:
                         cur = moved
                     elif history:
+                        if hist_i == len(history):
+                            original = buf  # readline: remember the in-progress line when entering history
                         hist_i = max(0, hist_i - 1)
                         buf = history[hist_i]
                         cur = len(buf)
@@ -623,10 +626,18 @@ class LineEditor:
                     elif moved is not None:
                         cur = moved
                     elif history:
-                        hist_i = min(len(history), hist_i + 1)
-                        buf = history[hist_i] if hist_i < len(history) else ""
-                        cur = len(buf)
-                        selected = 0
+                        if hist_i < len(history):
+                            hist_i += 1
+                            if hist_i >= len(history):
+                                # Bottom of history: restore the line that was being
+                                # edited before history navigation (readline behavior);
+                                # previously this cleared the buffer and lost it.
+                                buf = original if original is not None else ""
+                                original = None
+                            else:
+                                buf = history[hist_i]
+                            cur = len(buf)
+                            selected = 0
                 elif len(key) == 1 and key.isprintable():
                     buf = buf[:cur] + key + buf[cur:]
                     cur += 1
