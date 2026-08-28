@@ -797,7 +797,12 @@ def pick_list(options: list[str], selected: int = 0) -> int | None:
     try:
         tty.setraw(fd)
         while True:
-            key = _read_key(fd)
+            try:
+                key = _read_key(fd)
+            except OSError:
+                # tty/pipe closed mid-pick (window closed, pipe broken): cancel
+                # instead of traceback — dispatch only catches KeyboardInterrupt.
+                return None
             if key in {None, "\x03", "\x04", "q", "\x1b", "esc"}:
                 return None
             if key in {"\r", "\n"}:
@@ -810,7 +815,10 @@ def pick_list(options: list[str], selected: int = 0) -> int | None:
                 continue
             paint()
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except OSError:
+            pass  # fd already gone; the cancel above is the useful outcome
         style.writeln("")
 
 
