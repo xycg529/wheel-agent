@@ -88,7 +88,10 @@ class Session:
         lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         if not lines:
             raise ValueError(f"empty session file: {path}")
-        header = json.loads(lines[0])
+        try:
+            header = json.loads(lines[0])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"corrupt session header: {path}") from exc
         version = int(header.get("version") or 1)
         entries: dict[str, SessionEntry] = {}
         order: list[str] = []
@@ -104,7 +107,13 @@ class Session:
         last_compact: dict[str, Any] = {}
         prev_id: str | None = None
         for line in lines[1:]:
-            entry = json.loads(line)
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                # Torn tail: persist() can crash between write() and fsync(),
+                # leaving a truncated last line. Skip it like the other journal
+                # readers (file_is_empty, first_user_preview_from_path) do.
+                continue
             kind = entry.get("type")
             if kind in {"item", "entry"}:
                 item = entry.get("item")

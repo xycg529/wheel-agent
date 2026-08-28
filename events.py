@@ -73,13 +73,28 @@ class EventBus:
     def load_events(self) -> list[dict[str, Any]]:
         if not self.events_path.exists():
             return []
-        return [json.loads(line) for line in self.events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return _load_jsonl(self.events_path)
 
     def load_responses(self) -> list[dict[str, Any]]:
         if not self.responses_path.exists():
             return []
-        return [json.loads(line) for line in self.responses_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return _load_jsonl(self.responses_path)
 
+
+
+def _load_jsonl(path: Path) -> list[dict[str, Any]]:
+    """JSONL reader that skips torn tail lines (crash between write and fsync)."""
+    out: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out
 
 
 def _json_hash(value: Any) -> str:
