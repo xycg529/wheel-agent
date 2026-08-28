@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-# SWE-bench Lite official test split, sorted by instance_id, first 25.
+# SWE-bench Lite official test split, first 25 instance_ids in
+# lexicographic order (string sort: "-6938" comes after "-14995").
 # Frozen so a tiny SWE run is reproducible without pulling the full dataset just to list ids.
 INSTANCE_IDS: tuple[str, ...] = (
     "astropy__astropy-12907",
@@ -37,4 +38,15 @@ INSTANCE_IDS_TINY: tuple[str, ...] = (
     "django__django-10914",
     "django__django-11001",
     "django__django-11179",
+)
+
+# Headline set: one instance from each of five canonical repos, each with a
+# small single-file gold patch and a short, unambiguous issue statement.
+# django-11179 and astropy-12907 also appear in the frozen 25 for continuity.
+INSTANCE_IDS_CLASSIC5: tuple[str, ...] = (
+    "django__django-11179",
+    "sympy__sympy-20590",
+    "scikit-learn__scikit-learn-10508",
+    "matplotlib__matplotlib-23299",
+    "astropy__astropy-12907",
 )
