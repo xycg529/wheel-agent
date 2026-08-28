@@ -487,16 +487,7 @@ def _args_preview(args: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _clip(text: str, limit: int) -> str:
-    body = text.strip()
-    if len(body) <= limit:
-        return body
-    return body[: limit - 3] + "..."
-
-
 def _connector(nodes: list[GraphNode]) -> str:
-    if len(nodes) <= 1:
-        return "          |"
     return "          |"
 
 

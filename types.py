@@ -16,10 +16,6 @@ class Usage:
     cache_write_tokens: int = 0
     reasoning_tokens: int = 0
 
-    @property
-    def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
-
     def add(self, other: "Usage") -> None:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens

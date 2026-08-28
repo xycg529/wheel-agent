@@ -80,11 +80,6 @@ class SafetyGate:
         return verdict
 
 
-def approval_key(call: FunctionCall, workspace: str | Path | None = None) -> tuple[str, ...]:
-    keys = approval_keys(call, workspace)
-    return keys[0] if keys else (call.name,)
-
-
 def approval_keys(call: FunctionCall, workspace: str | Path | None = None) -> list[tuple[str, ...]]:
     if call.name != "bash":
         return [(call.name, json.dumps(call.arguments, sort_keys=True, ensure_ascii=False))]

@@ -310,19 +310,6 @@ def _summarize(prefix: list[Item], model: ModelClient, all_items: list[Item]) ->
     return text, response.usage
 
 
-def _attach_plan(items: list[Item], plan_text: str) -> list[Item]:
-    if not items:
-        return items
-    first = dict(items[0])
-    body = _item_text(first)
-    if "<plan>" not in body:
-        body = body.rstrip() + "\n\n<plan>\n" + plan_text.strip() + "\n</plan>"
-        if first.get("role") == "user" and isinstance(first.get("content"), str):
-            first["content"] = body
-        items = [first, *items[1:]]
-    return items
-
-
 def _ensure_file_tags(summary: str, read_files: list[str], modified_files: list[str]) -> str:
     body = summary.rstrip()
     if read_files and "<read-files>" not in body:

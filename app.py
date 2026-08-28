@@ -384,13 +384,6 @@ def _emit_clip(name: str, label: str, output: str, paint) -> None:
     FOOTER.paint()
 
 
-def _clip_body(text: str, max_lines: int = UI_TOOL_LINES, max_chars: int = UI_TOOL_CHARS) -> str:
-    body, _omitted = clip_tool_output(text, max_lines, max_chars)
-    return body
-
-
-
-
 def print_event(event: dict) -> None:
     global LIVE
     kind = event.get("type")

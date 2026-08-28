@@ -187,11 +187,6 @@ class Session:
         return None
 
     @classmethod
-    def list_ids(cls, workspace: str | Path) -> list[str]:
-        files = sorted(session_dir(workspace).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        return [p.stem for p in files]
-
-    @classmethod
     def list_previews(cls, workspace: str | Path, width: int = 48) -> list[tuple[str, str]]:
         files = sorted(session_dir(workspace).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         rows: list[tuple[str, str]] = []
@@ -294,9 +289,6 @@ class Session:
         if not target:
             raise ValueError("nothing to fork")
         self.set_leaf(target)
-
-    def user_nodes(self) -> list[tuple[str, str]]:
-        return [(row["id"], row["label"]) for row in self.tree_rows() if row["on_path"]]
 
     def tree_rows(self) -> list[dict[str, Any]]:
         path = set(self.path_ids())
