@@ -16,7 +16,7 @@ from wheel_agent.context import expand_skill_command, load_project_files, load_s
 from wheel_agent.trust import ensure_project_trust
 from wheel_agent.atfiles import list_at_files
 from wheel_agent.events import list_run_ids, load_run
-from wheel_agent.harness import HarnessStore, format_harness_for_prompt
+from wheel_agent.harness import format_harness_for_prompt
 from wheel_agent.loop import run_agent
 from wheel_agent.meter import compact_count
 from wheel_agent.model import make_client
@@ -25,17 +25,19 @@ from wheel_agent.reasoning import clamp_effort, normalize, reasoning_payload
 from wheel_agent.repl import BusyPrompt, LineEditor, _read_key, completion_words, enter_busy_tty, is_busy_abort_key, pick_list, query_cursor_row
 from wheel_agent.graph import build_session_graph, render_ascii, serve_graphs, stop_graph_server, write_html
 from wheel_agent.replay import print_timeline, replay_run, replay_session
-from wheel_agent.refine import (
-    format_refine_result,
-    parse_auto_refine_every,
-    parse_refine_args,
-    refine_due,
-    run_refine,
-)
+from wheel_agent.refine import parse_auto_refine_every
 from wheel_agent.tools import drain_job_events, format_jobs, kill_job
 from wheel_agent.session import Session
 
 from wheel_agent.app.state import STATE
+from wheel_agent.app.refine import (
+    _harness_store,
+    flush_auto_refine,
+    handle_refine,
+    handle_refine_auto,
+    maybe_schedule_periodic_refine,
+    schedule_auto_refine,
+)
 from wheel_agent.app.live import (
     LiveTurn,
     ToolSnips,
@@ -412,118 +414,10 @@ def handle_compact(config: AgentConfig, workspace: Path, session: Session) -> No
     STATE.footer.set(_meter_text(config, session))
 
 
-def _harness_store(workspace: Path, session: Session) -> HarnessStore:
-    return HarnessStore.for_workspace(
-        workspace,
-        session_path=session.path,
-        interactive=True,
-    )
-
-
 def handle_harness(workspace: Path, session: Session) -> None:
     store = _harness_store(workspace, session)
     listing = format_harness_for_prompt(store.merged(), max_content=None)
     _emit_clip("harness", "ok", listing, style.cyan)
-
-
-def maybe_schedule_periodic_refine(config: AgentConfig, workspace: Path, session: Session) -> None:
-    n = session.user_turns()
-    last = STATE.refine_at.get(session.session_id, 0)
-    if not refine_due(n, STATE.auto_refine_every, last):
-        return
-    STATE.refine_at[session.session_id] = n
-    schedule_auto_refine(config, workspace, session)
-
-
-def schedule_auto_refine(config: AgentConfig, workspace: Path, session: Session) -> None:
-    with STATE.refine_lock:
-        if STATE.refine_thread is not None and STATE.refine_thread.is_alive():
-            return
-    items = [dict(item) for item in session.items]
-    cache_key = session.cache_key
-
-    def work() -> None:
-        try:
-            model = make_client(config.provider, effort="off", cache_key=cache_key)
-            store = HarnessStore.for_workspace(
-                workspace,
-                session_path=session.path,
-                interactive=True,
-            )
-            result, extra = run_refine(
-                store,
-                items,
-                model,
-                instructions=(
-                    "Periodic refine after several user turns. "
-                    "Extract only durable lessons. Skip one-off task progress."
-                ),
-                global_=False,
-            )
-            applied = [row for row in result.get("appliedEdits") or [] if row.get("applied")]
-            payload = {
-                "session": session,
-                "usage": extra,
-                "text": format_refine_result(result),
-                "applied": bool(applied),
-            }
-        except Exception as exc:
-            payload = {"session": session, "error": str(exc)}
-        with STATE.refine_lock:
-            STATE.refine_pending.append(payload)
-
-    STATE.refine_thread = threading.Thread(target=work, daemon=True, name="wheel-refine")
-    STATE.refine_thread.start()
-
-
-def flush_auto_refine(config: AgentConfig, current: Session) -> bool:
-    if _busy():
-        return False
-    with STATE.refine_lock:
-        batch = list(STATE.refine_pending)
-        STATE.refine_pending.clear()
-    if not batch:
-        return False
-    for item in batch:
-        target = item.get("session") or current
-        if item.get("error"):
-            _emit(style.prefix_block("error  refine", str(item["error"]), style.red))
-            continue
-        target.usage.add(item["usage"])
-        target.invalidate_cache()
-        label, paint = ("ok", style.green) if item.get("applied") else ("skip", style.dim)
-        _emit_clip("refine", label, item["text"], paint)
-        if target is current:
-            STATE.footer.set(_meter_text(config, current))
-    STATE.footer.paint()
-    return True
-
-
-def handle_refine_auto(rest: str) -> None:
-    spec = rest.strip().lower()
-    if spec in {"", "status"}:
-        if STATE.auto_refine_every <= 0:
-            print("auto-refine  off")
-        else:
-            print(f"auto-refine  every {STATE.auto_refine_every} user turns  (background)")
-        return
-    if spec in {"off", "0", "false", "no"}:
-        STATE.auto_refine_every = 0
-        print(style.dim("auto-refine off"))
-        return
-    if spec in {"on", "true", "yes"}:
-        STATE.auto_refine_every = 8
-        print(style.green("auto-refine every 8 user turns"))
-        return
-    try:
-        STATE.auto_refine_every = max(0, int(spec))
-    except ValueError:
-        print("usage: /refine auto [N|off]")
-        return
-    if STATE.auto_refine_every == 0:
-        print(style.dim("auto-refine off"))
-    else:
-        print(style.green(f"auto-refine every {STATE.auto_refine_every} user turns"))
 
 
 def handle_jobs(rest: str = "") -> None:
@@ -560,47 +454,6 @@ def flush_jobs() -> bool:
         _emit(style.dim(line))
     STATE.footer.paint()
     return True
-
-
-def handle_refine(config: AgentConfig, workspace: Path, session: Session, rest: str) -> None:
-    try:
-        options = parse_refine_args(rest)
-    except ValueError as exc:
-        print(style.red(str(exc)))
-        return
-    if not session.items and not options.get("rollback_id"):
-        print(style.dim("nothing to refine"))
-        return
-    if not provider_ready(config.provider):
-        print(style.red("refine needs a provider API key"))
-        return
-    model = make_client(config.provider, effort="off", cache_key=session.cache_key)
-    store = _harness_store(workspace, session)
-    try:
-        result, extra = run_refine(
-            store,
-            session.items,
-            model,
-            instructions=options.get("instructions"),
-            rollback_id=options.get("rollback_id"),
-            global_=bool(options.get("global")),
-        )
-    except Exception as exc:
-        _emit(style.prefix_block("error  refine", str(exc), style.red))
-        STATE.footer.paint()
-        return
-    session.usage.add(extra)
-    session.invalidate_cache()
-    applied = [row for row in result.get("appliedEdits") or [] if row.get("applied")]
-    failed = [row for row in result.get("appliedEdits") or [] if not row.get("applied")]
-    if failed and not applied:
-        label, paint = "error", style.red
-    elif failed:
-        label, paint = "partial", style.yellow
-    else:
-        label, paint = "ok", style.green
-    _emit_clip("refine", label, format_refine_result(result), paint)
-    STATE.footer.set(_meter_text(config, session))
 
 
 def handle_undo(workspace: Path, spec: str = "") -> None:
