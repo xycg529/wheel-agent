@@ -794,15 +794,20 @@ def handle_compact(config: AgentConfig, workspace: Path, session: Session) -> No
         return
     model = make_client(config.provider, effort=config.effort, cache_key=session.cache_key)
     before = len(session.items)
-    compacted, extra, stats = compact_history(
-        session.items,
-        model,
-        workspace,
-        input_tokens=session.usage.input_tokens,
-        context_window=config.provider.context_window,
-        force=True,
-        plan_text=session.plan.render() if session.plan.steps else "",
-    )
+    try:
+        compacted, extra, stats = compact_history(
+            session.items,
+            model,
+            workspace,
+            input_tokens=session.usage.input_tokens,
+            context_window=config.provider.context_window,
+            force=True,
+            plan_text=session.plan.render() if session.plan.steps else "",
+        )
+    except Exception as exc:  # /refine guards this the same way: a provider hiccup must not crash the TUI
+        print(style.red(f"compact failed: {exc}"))
+        FOOTER.paint()
+        return
     session.apply_compact(compacted)
     session.usage.add(extra)
     if stats.did:
