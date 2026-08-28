@@ -91,15 +91,22 @@ def enable_java_tests(root: Path) -> int:
 def protected_tests_fingerprint(root: Path, lang: str = "python") -> str:
     parts: list[str] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.name == "__init__.py":
+        if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
         if lang == "java":
             keep = "/src/test/" in f"/{rel}/" or rel == "build.gradle"
         else:
             keep = "/tests/" in f"/{rel}/" or rel.startswith("tests/") or path.name.endswith("_test.py")
-        if keep:
-            parts.append(rel + ":" + hashlib.sha256(path.read_bytes()).hexdigest())
+        if not keep:
+            continue
+        # An empty tests/__init__.py is harmless package boilerplate the agent
+        # may create; a non-empty one could monkeypatch at import time while
+        # still reporting protected_tests_unchanged, so only empty ones are
+        # exempt from the fingerprint.
+        if path.name == "__init__.py" and not path.read_bytes().strip():
+            continue
+        parts.append(rel + ":" + hashlib.sha256(path.read_bytes()).hexdigest())
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
