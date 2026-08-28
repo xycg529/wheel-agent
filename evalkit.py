@@ -86,7 +86,15 @@ class EvalReport:
             "resolve_rate": (resolved / len(available)) if available else None,
             "tool_success_rate": (tool_ok / tool_calls) if tool_calls else None,
             "replay_exact_rate": (replay_exact / replay_cases) if replay_cases else None,
-            "availability_rate": (len(available) / len(self.outcomes)) if self.outcomes else None,
+            # "could it run at all": a run object or an officially scored
+            # outcome both count — agent_only outcomes ran, they just weren't
+            # scored, so they must not read as unavailable.
+            "availability_rate": (
+                len([item for item in self.outcomes if item.run is not None or item.status == "complete"])
+                / len(self.outcomes)
+            )
+            if self.outcomes
+            else None,
         }
 
     def format(self) -> str:
