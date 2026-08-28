@@ -20,6 +20,18 @@ TIMEOUT = 30
 USER_AGENT = "wheel-agent/0.1 (+https://github.com/wheel)"
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    # Refuse to auto-follow redirects: the default opener would follow 301/
+    # 302/303/307 (even cross-origin) before fetch_url's per-hop SSRF host
+    # check ever runs. Returning None makes urlopen raise HTTPError so the
+    # manual redirect loop below validates every hop itself.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N803
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 class WebError(Exception):
     pass
 
@@ -49,6 +61,17 @@ def search_web(query: str, *, num_results: int = 5, api_key: str | None = None) 
     return "\n".join(lines)
 
 
+def _decode_body(raw: bytes, content_type: str) -> str:
+    """Decode with the declared charset when present (gbk pages would mojibake as utf-8)."""
+    match = re.search(r"charset=([\w.\-]+)", content_type or "", re.I)
+    if match:
+        try:
+            return raw.decode(match.group(1))
+        except (LookupError, UnicodeDecodeError):
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
 def fetch_url(url: str) -> str:
     current = _validate_url(url)
     redirects = 0
@@ -59,7 +82,7 @@ def fetch_url(url: str) -> str:
             method="GET",
         )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            with _OPENER.open(req, timeout=TIMEOUT) as resp:
                 status = getattr(resp, "status", None) or resp.getcode()
                 if 300 <= int(status) < 400:
                     location = resp.headers.get("Location")
@@ -74,7 +97,8 @@ def fetch_url(url: str) -> str:
                         raise WebError(f"exceeded {MAX_REDIRECTS} redirects")
                     current = target
                     continue
-                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                ctype_header = resp.headers.get("Content-Type") or ""
+                ctype = ctype_header.split(";")[0].strip().lower()
                 raw = resp.read(MAX_BYTES + 1)
         except urllib.error.HTTPError as exc:
             if 300 <= exc.code < 400:
@@ -97,7 +121,7 @@ def fetch_url(url: str) -> str:
             raise WebError(str(exc)) from exc
         if len(raw) > MAX_BYTES:
             raw = raw[:MAX_BYTES]
-        text = raw.decode("utf-8", errors="replace")
+        text = _decode_body(raw, ctype_header)
         if ctype in {"text/html", "application/xhtml+xml"} or (not ctype and _looks_html(text)):
             text = html_to_text(text)
         return f"URL: {current.geturl()}\n\n{text.strip() or '(empty)'}"
