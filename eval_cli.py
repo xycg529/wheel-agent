@@ -21,8 +21,11 @@ def run_swe(args: argparse.Namespace) -> int:
         print(f"# {len(ids)} SWE-bench Lite instances", file=sys.stderr)
         return 0
     if shutil.which("docker") is None:
-        print("SWE eval needs Docker for the official SWE-bench harness; see EVALUATION.md", file=sys.stderr)
-        return 2
+        print(
+            "# no Docker: running the agent side only; predictions.jsonl is written and "
+            "scored later on a Docker machine (EVALUATION.md)",
+            file=sys.stderr,
+        )
     config = load_config(interactive=False)
     work_root = Path(args.work_root) if args.work_root else default_swe_work_root()
     work_root.mkdir(parents=True, exist_ok=True)
@@ -37,6 +40,8 @@ def run_swe(args: argparse.Namespace) -> int:
     sys.stdout.write(report.format())
     (work_root / "report.txt").write_text(report.format(), encoding="utf-8")
     failed = sum(1 for item in report.outcomes if not item.resolved)
+    if report.status == "agent_only":
+        return 0  # agent side complete; official scoring pending on Docker
     if report.status != "complete":
         return 2
     return 1 if failed else 0

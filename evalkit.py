@@ -61,13 +61,18 @@ class EvalReport:
     error: str = ""
 
     def metrics(self) -> dict[str, float | None]:
+        # resolve_rate only counts officially scored (complete) outcomes; the
+        # tool/replay metrics count every outcome that has a run, so an
+        # agent_only (no-Docker) SWE run still reports its agent-side numbers.
         available = [item for item in self.outcomes if item.status == "complete"]
         resolved = sum(1 for item in available if item.resolved)
         tool_calls = 0
         tool_ok = 0
         replay_cases = 0
         replay_exact = 0
-        for item in available:
+        for item in self.outcomes:
+            if item.run is None:
+                continue
             if item.run:
                 tool_calls += len(item.run.tool_results)
                 tool_ok += sum(1 for t in item.run.tool_results if not t.is_error or t.blocked)

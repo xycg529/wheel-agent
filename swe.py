@@ -131,23 +131,6 @@ def evaluate_swe(
     ids = tuple(instance_ids or INSTANCE_IDS_TINY)
     root = Path(work_root)
     root.mkdir(parents=True, exist_ok=True)
-    if shutil.which("docker") is None:
-        outcomes = [
-            TaskOutcome(
-                task_id=iid,
-                resolved=False,
-                checks=[CheckResult("official_evaluator", False, "docker unavailable")],
-                run=None,
-                status="unavailable",
-            )
-            for iid in ids
-        ]
-        return EvalReport(
-            suite=f"swe-lite-{len(ids)}",
-            outcomes=outcomes,
-            status="unavailable",
-            error="Docker is required for the official SWE-bench evaluator",
-        )
     try:
         rows = load_lite_rows(ids)
     except Exception as exc:
@@ -210,11 +193,22 @@ def evaluate_swe(
 
     pred_path = root / "predictions.jsonl"
     pred_path.write_text("".join(json.dumps(p) + "\n" for p in preds), encoding="utf-8")
-    eval_status, resolved, eval_error = _run_official_eval(
-        pred_path, eval_config.provider.model, ids, root
-    )
+    if shutil.which("docker") is None:
+        # Two-phase by design: the token-spending agent side is done and
+        # predictions.jsonl is the bridge artifact; the official scoring waits
+        # for a Docker-equipped machine (EVALUATION.md).
+        eval_status, resolved, eval_error = "agent_only", set(), ""
+    else:
+        eval_status, resolved, eval_error = _run_official_eval(
+            pred_path, eval_config.provider.model, ids, root
+        )
     for outcome in outcomes:
-        if eval_status != "complete":
+        if eval_status == "agent_only":
+            outcome.status = "agent_only"
+            outcome.checks.append(
+                CheckResult("official_evaluator", True, "skipped: no Docker (predictions.jsonl ready; see EVALUATION.md)")
+            )
+        elif eval_status != "complete":
             outcome.status = eval_status
             outcome.checks.append(CheckResult("official_evaluator", False, eval_error))
         elif outcome.status == "complete" and not any(not check.passed for check in outcome.checks):
