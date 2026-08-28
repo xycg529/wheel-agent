@@ -18,6 +18,7 @@ from wheel_agent.atfiles import list_at_files
 from wheel_agent.events import list_run_ids, load_run
 from wheel_agent.harness import HarnessStore, format_harness_for_prompt
 from wheel_agent.loop import run_agent
+from wheel_agent.meter import compact_count
 from wheel_agent.model import make_client
 from wheel_agent.queue import TurnQueue
 from wheel_agent.reasoning import clamp_effort, normalize, reasoning_payload
