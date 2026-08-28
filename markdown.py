@@ -47,10 +47,9 @@ def _render_blocks(text: str) -> str:
     for raw in text.splitlines():
         if raw.startswith("### "):
             lines.append(style.bold(_render_inline(raw[4:])))
-        elif raw.startswith("## "):
-            lines.append(style.bold(style.cyan(_render_inline(raw[3:]))))
-        elif raw.startswith("# "):
-            lines.append(style.bold(style.cyan(_render_inline(raw[2:]))))
+        elif raw.startswith("## ") or raw.startswith("# "):
+            body = _render_inline(raw[raw.index(" ") + 1 :])
+            lines.append(style.bold(style.cyan(body)))
         elif raw.startswith("> "):
             lines.append(style.dim("│ ") + style.italic(_render_inline(raw[2:])))
         elif raw.startswith("- ") or raw.startswith("* "):
