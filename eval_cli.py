@@ -1,18 +1,51 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
 from wheel_agent.config import load_config
 from wheel_agent.evals.polyglot import CATALOGS, JAVA_HAND_DONE
+from wheel_agent.evals.swe_lite import INSTANCE_IDS_CLASSIC5
 from wheel_agent.model import make_client
 from wheel_agent.polyglot import default_work_root, evaluate_polyglot
+from wheel_agent.swe import default_swe_work_root, evaluate_swe
+
+
+def run_swe(args: argparse.Namespace) -> int:
+    ids = [part.strip() for part in args.ids.split(",") if part.strip()] or list(INSTANCE_IDS_CLASSIC5)
+    if args.list:
+        for iid in ids:
+            print(iid)
+        print(f"# {len(ids)} SWE-bench Lite instances", file=sys.stderr)
+        return 0
+    if shutil.which("docker") is None:
+        print("SWE eval needs Docker for the official SWE-bench harness; see EVALUATION.md", file=sys.stderr)
+        return 2
+    config = load_config(interactive=False)
+    work_root = Path(args.work_root) if args.work_root else default_swe_work_root()
+    work_root.mkdir(parents=True, exist_ok=True)
+    config.runs_dir = (work_root / "wheel_runs").resolve()
+    print(
+        f"# suite=swe-lite model={config.provider.model} effort={config.effort} "
+        f"instances={len(ids)} work_root={work_root}",
+        file=sys.stderr,
+    )
+    model = make_client(config.provider, effort=config.effort)
+    report = evaluate_swe(config, model=model, work_root=work_root, instance_ids=ids, replay=not args.no_replay)
+    sys.stdout.write(report.format())
+    (work_root / "report.txt").write_text(report.format(), encoding="utf-8")
+    failed = sum(1 for item in report.outcomes if not item.resolved)
+    if report.status != "complete":
+        return 2
+    return 1 if failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Wheel eval suites. polyglot = Aider/Exercism, local tests, no Docker.",
+        description="Wheel eval suites. polyglot = Aider/Exercism, local tests, no Docker. "
+        "swe = SWE-bench Lite subset via the official Docker harness.",
     )
     sub = parser.add_subparsers(dest="suite", required=True)
     poly = sub.add_parser("polyglot", help="Aider polyglot (Exercism Python unittest / Java Gradle)")
@@ -29,10 +62,16 @@ def main(argv: list[str] | None = None) -> int:
     poly.add_argument("--cache", default="", help="polyglot-benchmark clone cache")
     poly.add_argument("--replay", action="store_true")
     poly.add_argument("--list", action="store_true", help="print exercise ids and exit")
+    swe = sub.add_parser("swe", help="SWE-bench Lite subset (official Docker harness)")
+    swe.add_argument("--ids", default="", help="comma-separated instance ids (default: the classic 5)")
+    swe.add_argument("--work-root", default="", help="default ~/.wheel/eval/swe-runs")
+    swe.add_argument("--no-replay", action="store_true", help="skip the recorded-response replay check")
+    swe.add_argument("--list", action="store_true", help="print instance ids and exit")
     args = parser.parse_args(argv)
 
-    if args.suite != "polyglot":
-        parser.error("unknown suite")
+    if args.suite == "swe":
+        return run_swe(args)
+
     catalog = CATALOGS[args.lang]
     if args.list:
         for name in catalog:

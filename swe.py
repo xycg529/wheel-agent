@@ -18,6 +18,10 @@ from wheel_agent.types import RunResult
 RUN_ID = "wheel"
 
 
+def default_swe_work_root() -> Path:
+    return Path.home() / ".wheel" / "eval" / "swe-runs"
+
+
 def load_lite_rows(ids: tuple[str, ...] | list[str] = INSTANCE_IDS) -> dict[str, dict[str, Any]]:
     try:
         from datasets import load_dataset
