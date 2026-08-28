@@ -16,6 +16,7 @@ EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 EXA_API_URL = "https://api.exa.ai/search"
 MAX_BYTES = 1_000_000
 MAX_REDIRECTS = 5
+SNIPPET_MAX = 400
 TIMEOUT = 30
 USER_AGENT = "wheel-agent/0.1 (+https://github.com/wheel)"
 
@@ -36,6 +37,14 @@ class WebError(Exception):
     pass
 
 
+def _clip_snippet(text: str) -> str:
+    """Whitespace-collapsed snippet truncated to the display budget, elided."""
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if len(text) > SNIPPET_MAX:
+        return text[: SNIPPET_MAX - 3] + "..."
+    return text
+
+
 def search_web(query: str, *, num_results: int = 5, api_key: str | None = None) -> str:
     query = query.strip()
     if not query:
@@ -52,9 +61,7 @@ def search_web(query: str, *, num_results: int = 5, api_key: str | None = None) 
     for i, row in enumerate(rows, start=1):
         title = row.get("title") or f"Source {i}"
         url = row.get("url") or ""
-        snippet = re.sub(r"\s+", " ", row.get("snippet") or "").strip()
-        if len(snippet) > 400:
-            snippet = snippet[:397] + "..."
+        snippet = _clip_snippet(row.get("snippet") or "")
         lines.append(f"{i}. {title}\n   {url}")
         if snippet:
             lines.append(f"   {snippet}")
@@ -147,9 +154,9 @@ def _search_exa_api(query: str, num_results: int, api_key: str) -> list[dict[str
         snippet = ""
         highlights = item.get("highlights") or []
         if isinstance(highlights, list) and highlights:
-            snippet = " ".join(str(h) for h in highlights if h)
+            snippet = _clip_snippet(" ".join(str(h) for h in highlights if h))
         elif item.get("text"):
-            snippet = str(item["text"])[:400]
+            snippet = _clip_snippet(str(item["text"]))
         rows.append({"title": str(item.get("title") or ""), "url": str(item["url"]), "snippet": snippet})
     return rows
 
@@ -192,7 +199,7 @@ def _search_exa_mcp(query: str, num_results: int) -> list[dict[str, str]]:
                         {
                             "title": str(item.get("title") or ""),
                             "url": str(item["url"]),
-                            "snippet": str(item.get("text") or item.get("snippet") or "")[:400],
+                            "snippet": _clip_snippet(str(item.get("text") or item.get("snippet") or "")),
                         }
                     )
             if rows:
@@ -261,7 +268,7 @@ def _parse_mcp_text_results(text: str) -> list[dict[str, str]]:
         title = block.split("\n", 1)[0].strip()
         if title.startswith("http"):
             title = ""
-        snippet = re.sub(r"\s+", " ", block[url_m.end() :]).strip()[:400]
+        snippet = _clip_snippet(block[url_m.end() :])
         rows.append({"title": title, "url": url, "snippet": snippet})
     return rows
 
