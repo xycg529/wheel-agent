@@ -15,7 +15,7 @@ agent harness is visible and readable here**: ~12k lines of Python, runtime
 dependencies limited to the `openai` SDK + `python-dotenv` (pytest for dev,
 pexpect for the PTY suite), no framework, no MCP, no RPC. Just a loop, a file,
 and a terminal. If you want to understand how a coding agent works end to
-end — loop, streaming, cache, compaction, safety, undo, replay, evals — this
+end — loop, streaming, cache, compaction, safety, undo, replay — this
 is the codebase to read.
 
 ---
@@ -85,27 +85,7 @@ wheel [--json|-j] [task...]
   `api_error` / `aborted`. Exit code: `0` for stop/max_turns/plan_rejected,
   `1` otherwise, `2` for config errors (e.g. missing API key — that also
   prints a `{"error": ..., "stop_reason": "error"}` line). Cost is not in the
-  payload; the meter/eval reports compute it from the price vars in §4.
-
-### `wheel-eval`
-
-```
-wheel-eval polyglot [--lang python|java] [--limit N] [--ids i,j] [--skip i,j]
-                    [--remaining] [--work-root DIR] [--replay|--no-replay] [--list]
-wheel-eval swe [--ids i,j] [--work-root DIR] [--no-replay] [--list]
-```
-
-- `polyglot` — Aider Polyglot (Exercism) exercises: clones the public exercise
-  set, translates the target file, runs the official tests **locally**
-  (`unittest` for Python, `gradlew` for Java) — no Docker needed.
-- `swe` — SWE-bench Lite subset: clones each repo at its base commit, runs the
-  agent on the issue, writes `predictions.jsonl`, then scores it with the
-  **official** `swebench` Docker harness (see [EVALUATION.md](EVALUATION.md)).
-  Default set: the curated **classic 5** (one small, unambiguous issue from
-  each of django / sympy / scikit-learn / matplotlib / astropy).
-- `--list` prints the instance ids and exits (no model calls).
-- Every run lands in its work root with `events.jsonl` + `responses.jsonl` +
-  `meta.json`, so any run is replayable offline.
+  payload; the meter computes it from the price vars in §4.
 
 ## 3. REPL reference
 
@@ -193,7 +173,7 @@ documented template). Any number of providers, switched at runtime with
 | Variable | Meaning |
 |---|---|
 | `DEFAULT_PROVIDER` | which block to start on |
-| `MAX_TURNS` | REPL/one-shot turn cap; `0` = unlimited. Evals use their own cap (20 polyglot / 50 SWE) unless you set this > 0 |
+| `MAX_TURNS` | REPL/one-shot turn cap; `0` = unlimited |
 | `REASONING_EFFORT` | unified preference `off|minimal|low|medium|high|xhigh|max`; **clamped per model** (up first, then down) and omitted entirely for non-reasoning models (so they don't 400) |
 | `WHEEL_TIMEOUT` | seconds per API call (default 180) |
 | `WHEEL_API_RETRIES` / `WHEEL_API_RETRY_BASE` | transient-failure retry count / base backoff seconds |
@@ -382,69 +362,49 @@ variety, not the harness.
 
 ```
 wheel_agent/
-  app/            the TUI process
-    state.py        AppState (footer/live/active/snips/refine thread state)
-    live.py         LiveTurn, ToolSnips, print_event, clip/expand, meter
-    commands.py     /resume /tree /graph /compact /harness /jobs /undo /replay
-    refine.py       manual + auto refine (one execution core, two presentations)
-    __init__.py     process plumbing: config load, run_task, --json, session CLI, dispatch
-  loop.py         the agent loop
-  model.py        Responses + Chat Completions clients (stream, retry, cancel)
-  session.py      JSONL tree store
-  compact.py      prompt-cache-aware compaction
-  context.py      token estimation, context files, skill expansion
-  safety.py       sensitive paths + bash intent approval
-  checkpoint.py   file snapshots → /undo /undo-task
-  harness.py      notes/memories store (CAS, rollback, load-tolerant)
-  refine.py       lesson extraction (second model pass)
-  tools.py        the 13 tools + background jobs
-  truncate.py     output clipping + spill-to-disk
-  events.py       event stream + JSONL recorder
-  queue.py        steer/follow/abort queue
-  plan.py         plan steps + rejection
-  audit.py        run audit (hashes, fingerprints, permission verdicts)
-  graph.py        session DAG → ascii/HTML
-  replay.py       recorded-response replay
-  polyglot.py / swe.py / evalkit.py / eval_cli.py   evals
-  repl.py / style.py / markdown.py   terminal UI
-  reasoning.py    effort scale, clamp, per-API payloads
-  config.py       .env → AgentConfig
-  web.py          SSRF-guarded fetch/search
-  trust.py        project-skill trust
-  workspace.py    workspace fingerprinting
-  types.py        shared dataclasses
+  core/           the agent core
+    loop.py         the agent loop
+    model.py        Responses + Chat Completions clients (stream, retry, cancel)
+    reasoning.py    effort scale, clamp, per-API payloads
+    prompt.py       system prompt assembly
+    context.py      token estimation, context files, skill expansion
+    session.py      JSONL tree store
+    compact.py      prompt-cache-aware compaction
+    checkpoint.py   file snapshots → /undo /undo-task
+    truncate.py     output clipping + spill-to-disk
+    plan.py         plan steps + rejection
+    events.py       event stream + JSONL recorder
+    queue.py        steer/follow/abort queue
+    meter.py        turns/tokens/cost meter
+    config.py       .env → AgentConfig
+    types.py        shared dataclasses
+  tools/          the tool layer
+    tools.py        the 13 tools + background jobs
+    safety.py       sensitive paths + bash intent approval
+    trust.py        project-skill trust
+    audit.py        run audit (hashes, fingerprints, permission verdicts)
+    workspace.py    workspace fingerprinting
+    rgfiles.py      glob/grep (ripgrep when available)
+    atfiles.py      @file mention expansion
+    web.py          SSRF-guarded fetch/search
+  ui/             terminal UI
+    repl.py         the REPL (input editor, busy prompt, dispatch)
+    style.py        TTY styling, ansi, term size
+    markdown.py     terminal markdown rendering
+    graph.py        session DAG → ascii/HTML
+    replay.py       recorded-response replay
+    app/            the TUI process
+      state.py        AppState (footer/live/active/snips/refine thread state)
+      live.py         LiveTurn, ToolSnips, print_event, clip/expand, meter
+      commands.py     /resume /tree /graph /compact /harness /jobs /undo /replay
+      refine.py       manual + auto refine (one execution core, two presentations)
+      __init__.py     process plumbing: config load, run_task, --json, session CLI, dispatch
+  harness/        continual learning
+    harness.py      notes/memories store (CAS, rollback, load-tolerant)
+    refine.py       lesson extraction (second model pass)
 ```
 
-## 6. Evals & results
-
-Run:
-
-```bash
-wheel-eval polyglot --limit 10        # Python exercises, local unittest, no Docker
-wheel-eval polyglot --lang java       # Java exercises (needs a `grok` provider block)
-wheel-eval swe                        # SWE-bench Lite classic 5 (needs Docker)
-```
-
-Metrics per run (see [EVALUATION.md](EVALUATION.md) for the SWE runbook):
-`resolve_rate` (official tests pass), `tool_success_rate`, `replay_exact_rate`
-(determinism), `availability_rate` (could the task run at all), avg turns,
-tokens, cost. **A metric without samples prints `N/A`, never a faked 0%.**
-
-Results so far (model **grok-4.6, effort=low**; full tables in
-[EVAL-RESULTS.md](EVAL-RESULTS.md)):
-
-| Suite | Result | Notes |
-|---|---|---|
-| Aider Polyglot **Python** 34/34 | **resolve_rate 100%** | 6.47 avg turns, ~$1.17, 0 tool errors; every `live/` re-verified with `unittest` |
-| Aider Polyglot **Java** 47/47 | **resolve_rate 100%** (42 auto + 5 hand-verified) | 5.88 avg turns, ~$1.76 |
-| SWE-bench Lite **classic 5** | *no published run yet* | runbook in [EVALUATION.md](EVALUATION.md); classic-5 instances are long-public, so treat any result as harness validation, not model capability |
-
-Do **not** read these as "Aider Polyglot 100%": the official benchmark is
-225 cross-language exercises and the best public scores are far below 100%.
-What the numbers say: this harness runs the exercises without harness bugs
-interrupting the model.
-
-## 7. Testing
+## 6. Testing
 
 ```bash
 scripts/run_all_tests.sh     # CI entry point: 272 pytest + keyless PTY scenarios
@@ -464,22 +424,19 @@ CI (`.github/workflows/ci.yml`): pytest + keyless PTY on Linux/macOS across
 Python 3.11–3.13, pytest-only on Windows (pexpect needs a POSIX pty). No API
 key, no Docker.
 
-## 8. Repository layout
+## 7. Repository layout
 
 ```
 wheel_agent/       the agent (see 5.9)
-tests/             272 pytest tests, no provider needed
-scripts/           pty_eval.py + scenarios/, run_all_tests.sh, PTY drivers, fixtures
-bin/wheel          console-script target (see the name warning)
-main.py            `python3 main.py` entry (no install needed)
-.env.example       documented provider template
-EVALUATION.md      SWE-bench Lite setup + runbook
-EVAL-RESULTS.md    eval results tables (the numbers above, with detail)
-TESTING.md         feature × boundary test matrix
-MANUAL-TEST.md     human checklist (things a script can't judge)
+  core/            loop, model, session, context, compaction, config, types
+  tools/           the 13 tools + safety/trust/audit, workspace, file & web access
+  ui/              terminal UI: repl, style, markdown, graph, replay
+  ui/app/          the TUI process: state, live, commands, refine
+  harness/         notes/memories store + lesson extraction
+README.md          this file
 ```
 
-## 9. Limitations (honest list)
+## 8. Limitations (honest list)
 
 - One provider at a time per run; switching is per-process (`provider <name>`).
 - No MCP, no sub-agent fan-out, no image input — by design, to keep the loop readable.
@@ -560,23 +517,6 @@ RPC——一个循环、一个文件、一个终端。想真正看懂 coding age
 - **实时 UI**：流式 say/think 帧、工具输出裁剪+`/expand`、底部 meter 用
   DECSTBM/DECSC 独占屏幕行（流式与 resize 都不撕裂，尺寸来自 ioctl 而不
   是 stale `COLUMNS`）；`/replay` 就是同一套事件打印机喂录制流。
-
-## 评测与成绩
-
-```bash
-wheel-eval polyglot --limit 10   # Aider/Exercism，本地 unittest，免 Docker
-wheel-eval swe                   # SWE-bench Lite 精选 5 题（官方 Docker harness）
-```
-
-指标：`resolve_rate`（官方测试通过）、`tool_success_rate`、
-`replay_exact_rate`（确定性）、`availability_rate`、均 turn 数、token、
-成本。**缺样本的指标打印 `N/A`，绝不伪造 0%。**
-
-已有成绩（grok-4.6 / effort=low，详见 [EVAL-RESULTS.md](EVAL-RESULTS.md)）：
-**Aider Polyglot Python 34/34**、**Java 47/47** 全部 resolve（官方榜是 225
-题跨语言，别写成 “Polyglot 100%”；这说明的是 harness 没给模型添乱）。
-SWE 精选 5 题：暂无已发布成绩（评测需项目作者本人在 Docker 容器里跑，
-runbook 在 [EVALUATION.md](EVALUATION.md)）。
 
 ## 测试
 
