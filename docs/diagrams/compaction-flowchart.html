@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wheel Agent · 压缩判定流程</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #eb6c36;
+      --font-sans:     'Geist', 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif SC', 'Songti SC', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+    .frame { max-width: 1200px; width: 100%; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing:0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Flowchart · Compaction</p>
+    <h1>什么时候切一刀，切在哪里</h1>
+
+    <svg viewBox="0 0 1000 704" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="wa-flow-title wa-flow-desc">
+      <title id="wa-flow-title">Wheel Agent 历史压缩判定流程</title>
+      <desc id="wa-flow-desc">流程图：回合结束后检查真实输入 token 是否逼近上下文窗口，是则继续判断会话是否足够小，小会话直接原样返回；否则在用户消息边界选切点，生成带状态标签的摘要替换前缀，后缀逐字节保留，缓存纪元加一后继续运行。</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- transitions (before nodes) -->
+      <!-- start oval -> check1 -->
+      <line x1="500" y1="92" x2="500" y2="128" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="510" y="100" width="76" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="514" y="112" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans SC',sans-serif">回合结束</text>
+
+      <!-- check1 no -> done (right) -->
+      <line x1="648" y1="164" x2="800" y2="164" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="664" y="140" width="24" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="676" y="152" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">否</text>
+
+      <!-- check1 yes -> check2 -->
+      <line x1="500" y1="200" x2="500" y2="252" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="510" y="216" width="24" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="522" y="228" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">是</text>
+
+      <!-- check2 yes (tiny) -> done (right route) -->
+      <path d="M 648,288 H 756 Q 764,288 764,280 V 172 Q 764,164 772,164 H 800" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="660" y="260" width="76" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="698" y="272" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans SC',sans-serif">原样返回</text>
+
+      <!-- check2 no -> cut -->
+      <line x1="500" y1="324" x2="500" y2="364" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="510" y="332" width="24" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="522" y="344" fill="#4f5d75" font-size="12" font-weight="500" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">否</text>
+
+      <!-- cut -> summarize -->
+      <line x1="500" y1="432" x2="500" y2="468" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- summarize -> keep -->
+      <line x1="500" y1="536" x2="500" y2="572" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- nodes -->
+      <!-- start oval -->
+      <rect x="424" y="56" width="152" height="36" rx="20" fill="#f5f5f5"/>
+      <rect x="424" y="56" width="152" height="36" rx="20" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="500" y="79" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">循环继续</text>
+
+      <!-- diamond 1 -->
+      <polygon points="500,132 648,164 500,196 352,164" fill="#f5f5f5"/>
+      <polygon points="500,132 648,164 500,196 352,164" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="500" y="160" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">输入 token 逼近</text>
+      <text x="500" y="176" fill="#4f5d75" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">上下文窗口？</text>
+
+      <!-- diamond 2 -->
+      <polygon points="500,256 648,288 500,320 352,288" fill="#f5f5f5"/>
+      <polygon points="500,256 648,288 500,320 352,288" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="500" y="284" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">会话足够小？</text>
+      <text x="500" y="300" fill="#4f5d75" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">（压缩即无操作）</text>
+
+      <!-- cut step (focal) -->
+      <rect x="356" y="368" width="288" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="356" y="368" width="288" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <text x="500" y="394" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">在用户消息边界选切点</text>
+      <text x="500" y="412" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cut point moves forward only</text>
+
+      <!-- summarize step -->
+      <rect x="356" y="470" width="288" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="356" y="470" width="288" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="500" y="494" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">生成摘要替换前缀</text>
+      <text x="500" y="512" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">+ &lt;read-files&gt; &lt;modified-files&gt;</text>
+
+      <!-- keep step -->
+      <rect x="356" y="576" width="288" height="40" rx="6" fill="#f5f5f5"/>
+      <rect x="356" y="576" width="288" height="40" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="500" y="594" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">近期条目逐字节不动 · epoch+1</text>
+      <text x="500" y="608" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">cache stays hot</text>
+
+      <!-- done oval -->
+      <rect x="808" y="144" width="136" height="40" rx="20" fill="#f5f5f5"/>
+      <rect x="808" y="144" width="136" height="40" rx="20" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="876" y="162" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">不压缩</text>
+      <text x="876" y="176" fill="#7a8399" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">epoch unchanged</text>
+
+      <!-- side note -->
+      <rect x="808" y="240" width="152" height="72" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="884" y="268" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">对极小会话压缩</text>
+      <text x="884" y="286" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">是纯无操作：</text>
+      <text x="884" y="304" fill="#4f5d75" font-size="12" font-family="'Geist','Noto Sans SC',sans-serif" text-anchor="middle">缓存纪元都不动</text>
+
+      <!-- legend -->
+      <line x1="30" y1="648" x2="970" y2="648" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="30" y="670" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <rect x="100" y="660" width="16" height="12" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="124" y="670" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace">START/END</text>
+      <polygon points="220,666 244,658 268,666 244,674" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="276" y="670" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace">DECISION</text>
+      <rect x="372" y="658" width="16" height="14" rx="4" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="396" y="670" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace">KEY STEP</text>
+      <rect x="484" y="658" width="16" height="14" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="508" y="670" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace">NOTE</text>
+    </svg>
+  </div>
+</body>
+</html>
