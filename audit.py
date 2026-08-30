@@ -27,8 +27,15 @@ def _normalize_for_audit(value: Any, workspace: str | Path | None) -> Any:
     if isinstance(value, list):
         return [_normalize_for_audit(item, workspace) for item in value]
     if isinstance(value, str) and workspace:
+        # Replace both the resolved root and the raw workspace string: on macOS
+        # /tmp is a symlink to /private/tmp, so an unresolved workspace (or an
+        # unresolved path in tool output) would otherwise survive into the hash.
         root = str(Path(workspace).resolve())
-        return value.replace(root, "<workspace>")
+        out = value.replace(root, "<workspace>")
+        raw = str(workspace)
+        if raw != root:
+            out = out.replace(raw, "<workspace>")
+        return out
     return value
 
 
