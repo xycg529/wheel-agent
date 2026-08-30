@@ -5,8 +5,8 @@ import os
 import re
 from typing import Any
 
-from wheel_agent.compact import serialize_items
-from wheel_agent.harness import (
+from wheel_agent.core.compact import serialize_items
+from wheel_agent.harness.harness import (
     HarnessState,
     HarnessStore,
     apply_proposal,
@@ -15,8 +15,8 @@ from wheel_agent.harness import (
     rollback_proposal,
     snapshot_state,
 )
-from wheel_agent.model import ModelClient, extract_text
-from wheel_agent.types import Item, Usage
+from wheel_agent.core.model import ModelClient, extract_text
+from wheel_agent.core.types import Item, Usage
 
 REFINEMENT_INSTRUCTIONS = """You are Wheel's /refine continual harness subsystem.
 

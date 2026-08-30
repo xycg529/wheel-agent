@@ -2,7 +2,7 @@
 /jobs, /undo, /replay and the session-replay destination helper.
 
 Each handler is a thin adapter — parse args, do one thing, render with the
-shared live-UI helpers (live.py). Re-exported from wheel_agent.app so the
+shared live-UI helpers (live.py). Re-exported from wheel_agent.ui.app so the
 REPL dispatch and the tests keep a single seam.
 """
 
@@ -11,22 +11,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from wheel_agent import style
-from wheel_agent.app.state import STATE
-from wheel_agent.app.live import _emit, _emit_clip, _meter_text, print_transcript
-from wheel_agent.app.refine import _harness_store
-from wheel_agent.checkpoint import CheckpointStore
-from wheel_agent.compact import compact_history
-from wheel_agent.config import AgentConfig, provider_ready
-from wheel_agent.events import load_run
-from wheel_agent.graph import build_session_graph, render_ascii, serve_graphs, write_html
-from wheel_agent.harness import format_harness_for_prompt
-from wheel_agent.meter import compact_count
-from wheel_agent.model import make_client
-from wheel_agent.repl import pick_list
-from wheel_agent.replay import print_timeline, replay_run, replay_session
-from wheel_agent.session import Session
-from wheel_agent.tools import drain_job_events, format_jobs, kill_job
+from wheel_agent.ui import style
+from wheel_agent.ui.app.state import STATE
+from wheel_agent.ui.app.live import _emit, _emit_clip, _meter_text, print_transcript
+from wheel_agent.ui.app.refine import _harness_store
+from wheel_agent.core.checkpoint import CheckpointStore
+from wheel_agent.core.compact import compact_history
+from wheel_agent.core.config import AgentConfig, provider_ready
+from wheel_agent.core.events import load_run
+from wheel_agent.ui.graph import build_session_graph, render_ascii, serve_graphs, write_html
+from wheel_agent.harness.harness import format_harness_for_prompt
+from wheel_agent.core.meter import compact_count
+from wheel_agent.core.model import make_client
+from wheel_agent.ui.repl import pick_list
+from wheel_agent.ui.replay import print_timeline, replay_run, replay_session
+from wheel_agent.core.session import Session
+from wheel_agent.tools.tools import drain_job_events, format_jobs, kill_job
 
 
 def handle_replay_session(config: AgentConfig, session: Session, workspace: Path, dest_spec: str = "") -> None:

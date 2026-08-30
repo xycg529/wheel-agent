@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.safety import is_sensitive_path
+from wheel_agent.tools.safety import is_sensitive_path
 
 SKIP_PARTS = {".wheel", ".wheel_runs", ".git", "__pycache__"}
 

@@ -6,12 +6,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.config import AgentConfig, ProviderConfig
-from wheel_agent.events import EventBus, load_run
-from wheel_agent.graph import list_session_runs
-from wheel_agent.loop import run_agent
-from wheel_agent.model import ScriptedModel
-from wheel_agent.types import RunResult
+from wheel_agent.core.config import AgentConfig, ProviderConfig
+from wheel_agent.core.events import EventBus, load_run
+from wheel_agent.ui.graph import list_session_runs
+from wheel_agent.core.loop import run_agent
+from wheel_agent.core.model import ScriptedModel
+from wheel_agent.core.types import RunResult
 
 
 def print_timeline(bus: EventBus) -> str:

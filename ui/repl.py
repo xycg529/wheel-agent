@@ -9,9 +9,9 @@ import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
-from wheel_agent import style
-from wheel_agent.atfiles import at_token, replace_at_token
-from wheel_agent.style import display_width, wrap_display
+from wheel_agent.ui import style
+from wheel_agent.tools.atfiles import at_token, replace_at_token
+from wheel_agent.ui.style import display_width, wrap_display
 
 SLASH_CATALOG: tuple[tuple[str, str, str], ...] = (
     ("/help", "本说明", "/help"),

@@ -11,10 +11,10 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from wheel_agent.style import Footer
+from wheel_agent.ui.style import Footer
 
 if TYPE_CHECKING:
-    from wheel_agent.app import LiveTurn, ToolSnips
+    from wheel_agent.ui.app import LiveTurn, ToolSnips
 
 
 class AppState:

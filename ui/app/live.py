@@ -11,14 +11,14 @@ from __future__ import annotations
 import json
 import sys
 
-from wheel_agent import style
-from wheel_agent.app.state import STATE
-from wheel_agent.compact import SUMMARY_MARK, is_summary_item
-from wheel_agent.config import AgentConfig
-from wheel_agent.meter import compact_count, format_meter
-from wheel_agent.markdown import render_markdown
-from wheel_agent.model import extract_text, extract_thinking, item_text
-from wheel_agent.session import Session
+from wheel_agent.ui import style
+from wheel_agent.ui.app.state import STATE
+from wheel_agent.core.compact import SUMMARY_MARK, is_summary_item
+from wheel_agent.core.config import AgentConfig
+from wheel_agent.core.meter import compact_count, format_meter
+from wheel_agent.ui.markdown import render_markdown
+from wheel_agent.core.model import extract_text, extract_thinking, item_text
+from wheel_agent.core.session import Session
 
 UI_TOOL_LINES = 6
 UI_TOOL_CHARS = 500

@@ -13,15 +13,15 @@ from pathlib import Path
 from secrets import token_hex
 from typing import Any, Literal
 
-from wheel_agent.checkpoint import CheckpointStore
-from wheel_agent.harness import HarnessStore
-from wheel_agent.plan import PlanRejected, PlanStore
-from wheel_agent.rgfiles import DEFAULT_LIMIT, glob_files, grep_files
-from wheel_agent.safety import SafetyGate, is_sensitive_path
-from wheel_agent.truncate import GREP_MAX_LINE_LENGTH, apply
-from wheel_agent.types import FunctionCall, ToolResult
-from wheel_agent.web import WebError, fetch_url, search_web
-from wheel_agent.workspace import Workspace
+from wheel_agent.core.checkpoint import CheckpointStore
+from wheel_agent.harness.harness import HarnessStore
+from wheel_agent.core.plan import PlanRejected, PlanStore
+from wheel_agent.tools.rgfiles import DEFAULT_LIMIT, glob_files, grep_files
+from wheel_agent.tools.safety import SafetyGate, is_sensitive_path
+from wheel_agent.core.truncate import GREP_MAX_LINE_LENGTH, apply
+from wheel_agent.core.types import FunctionCall, ToolResult
+from wheel_agent.tools.web import WebError, fetch_url, search_web
+from wheel_agent.tools.workspace import Workspace
 
 OnUpdate = Callable[[str], None]
 Executor = Callable[[dict[str, Any], Workspace, OnUpdate | None], str]

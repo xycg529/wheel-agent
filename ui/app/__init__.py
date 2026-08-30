@@ -7,23 +7,23 @@ import sys
 import threading
 from pathlib import Path
 
-from wheel_agent import style
-from wheel_agent.config import AgentConfig, load_config, provider_ready
-from wheel_agent.context import expand_skill_command, load_project_files, load_skills
-from wheel_agent.trust import ensure_project_trust
-from wheel_agent.atfiles import list_at_files
-from wheel_agent.events import list_run_ids
-from wheel_agent.graph import stop_graph_server
-from wheel_agent.loop import run_agent
-from wheel_agent.meter import compact_count
-from wheel_agent.model import make_client
-from wheel_agent.queue import TurnQueue
-from wheel_agent.reasoning import clamp_effort, normalize, reasoning_payload
-from wheel_agent.repl import BusyPrompt, LineEditor, _read_key, completion_words, enter_busy_tty, is_busy_abort_key, pick_list, query_cursor_row
-from wheel_agent.refine import parse_auto_refine_every
-from wheel_agent.session import Session
+from wheel_agent.ui import style
+from wheel_agent.core.config import AgentConfig, load_config, provider_ready
+from wheel_agent.core.context import expand_skill_command, load_project_files, load_skills
+from wheel_agent.tools.trust import ensure_project_trust
+from wheel_agent.tools.atfiles import list_at_files
+from wheel_agent.core.events import list_run_ids
+from wheel_agent.ui.graph import stop_graph_server
+from wheel_agent.core.loop import run_agent
+from wheel_agent.core.meter import compact_count
+from wheel_agent.core.model import make_client
+from wheel_agent.core.queue import TurnQueue
+from wheel_agent.core.reasoning import clamp_effort, normalize, reasoning_payload
+from wheel_agent.ui.repl import BusyPrompt, LineEditor, _read_key, completion_words, enter_busy_tty, is_busy_abort_key, pick_list, query_cursor_row
+from wheel_agent.harness.refine import parse_auto_refine_every
+from wheel_agent.core.session import Session
 
-# Re-exported for main.py and the test seams (tests import wheel_agent.app and
+# Re-exported for main.py and the test seams (tests import wheel_agent.ui.app and
 # touch app.print_transcript / app.ToolSnips / ...); __all__ keeps pyflakes honest
 # about which of these are intentional public names.
 __all__ = [
@@ -41,8 +41,8 @@ __all__ = [
     "tool_output_label",
 ]
 
-from wheel_agent.app.state import STATE
-from wheel_agent.app.commands import (
+from wheel_agent.ui.app.state import STATE
+from wheel_agent.ui.app.commands import (
     flush_jobs,
     handle_compact,
     handle_graph,
@@ -55,13 +55,13 @@ from wheel_agent.app.commands import (
     handle_undo,
     handle_undo_task,
 )
-from wheel_agent.app.refine import (
+from wheel_agent.ui.app.refine import (
     flush_auto_refine,
     handle_refine,
     handle_refine_auto,
     maybe_schedule_periodic_refine,
 )
-from wheel_agent.app.live import (
+from wheel_agent.ui.app.live import (
     LiveTurn,
     ToolSnips,
     _busy,

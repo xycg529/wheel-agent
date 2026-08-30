@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.context import estimate_item_tokens, estimate_items_tokens, tag_lines
-from wheel_agent.model import ModelClient, extract_text, item_text
-from wheel_agent.types import Item, Usage
+from wheel_agent.core.context import estimate_item_tokens, estimate_items_tokens, tag_lines
+from wheel_agent.core.model import ModelClient, extract_text, item_text
+from wheel_agent.core.types import Item, Usage
 
 RESERVE_TOKENS = 16_384
 KEEP_RECENT_TOKENS = 20_000

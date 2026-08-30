@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.compact import is_summary_item
-from wheel_agent.events import _now, new_run_id
-from wheel_agent.model import item_text
-from wheel_agent.plan import PlanStore
-from wheel_agent.types import Item, Usage
+from wheel_agent.core.compact import is_summary_item
+from wheel_agent.core.events import _now, new_run_id
+from wheel_agent.core.model import item_text
+from wheel_agent.core.plan import PlanStore
+from wheel_agent.core.types import Item, Usage
 
 SESSION_DIR = ".wheel/sessions"
 CURRENT_VERSION = 2

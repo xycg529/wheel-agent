@@ -8,9 +8,9 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from wheel_agent.config import ProviderConfig
-from wheel_agent.reasoning import reasoning_payload
-from wheel_agent.types import APIError, Item, ModelResponse, Usage
+from wheel_agent.core.config import ProviderConfig
+from wheel_agent.core.reasoning import reasoning_payload
+from wheel_agent.core.types import APIError, Item, ModelResponse, Usage
 
 DeltaFn = Callable[[str, str], None]
 

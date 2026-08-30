@@ -7,7 +7,7 @@ from pathlib import Path
 from secrets import token_hex
 from typing import Any
 
-from wheel_agent.safety import is_sensitive_path
+from wheel_agent.tools.safety import is_sensitive_path
 
 MAX_BYTES = 1_000_000
 SKIP_PARTS = {".wheel", ".wheel_runs", ".git"}

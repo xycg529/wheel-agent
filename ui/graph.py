@@ -9,11 +9,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.audit import redact_tool_args, redact_tool_output
-from wheel_agent.compact import is_summary_item
-from wheel_agent.model import item_text
-from wheel_agent.session import Session, preview_user_text
-from wheel_agent.tools import parse_function_calls
+from wheel_agent.tools.audit import redact_tool_args, redact_tool_output
+from wheel_agent.core.compact import is_summary_item
+from wheel_agent.core.model import item_text
+from wheel_agent.core.session import Session, preview_user_text
+from wheel_agent.tools.tools import parse_function_calls
 
 PARALLEL_TOOLS = {
     "read",

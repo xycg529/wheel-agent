@@ -16,19 +16,19 @@ from __future__ import annotations
 
 import threading
 
-from wheel_agent import style
-from wheel_agent.app.state import STATE
-from wheel_agent.app.live import _busy, _emit, _emit_clip, _meter_text
-from wheel_agent.config import AgentConfig, provider_ready
-from wheel_agent.harness import HarnessStore
-from wheel_agent.model import make_client
-from wheel_agent.refine import (
+from wheel_agent.ui import style
+from wheel_agent.ui.app.state import STATE
+from wheel_agent.ui.app.live import _busy, _emit, _emit_clip, _meter_text
+from wheel_agent.core.config import AgentConfig, provider_ready
+from wheel_agent.harness.harness import HarnessStore
+from wheel_agent.core.model import make_client
+from wheel_agent.harness.refine import (
     format_refine_result,
     parse_refine_args,
     refine_due,
     run_refine,
 )
-from wheel_agent.session import Session
+from wheel_agent.core.session import Session
 
 
 def _harness_store(workspace, session: Session) -> HarnessStore:

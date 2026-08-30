@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from wheel_agent import style
+from wheel_agent.ui import style
 
 _FENCE = re.compile(r"```(\w*)\n?(.*?)```", re.S)
 _BOLD = re.compile(r"\*\*(.+?)\*\*")

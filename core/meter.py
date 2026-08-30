@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from wheel_agent.types import Usage
+from wheel_agent.core.types import Usage
 
 
 def compact_count(n: int) -> str:

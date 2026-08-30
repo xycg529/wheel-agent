@@ -6,8 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from wheel_agent.meter import infer_model_profile
-from wheel_agent.reasoning import infer_effort_levels, normalize, parse_levels
+from wheel_agent.core.meter import infer_model_profile
+from wheel_agent.core.reasoning import infer_effort_levels, normalize, parse_levels
 
 
 @dataclass(frozen=True)

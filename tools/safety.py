@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from wheel_agent.types import FunctionCall, SafetyVerdict
+from wheel_agent.core.types import FunctionCall, SafetyVerdict
 
 
 AskFn = Callable[[str], bool]

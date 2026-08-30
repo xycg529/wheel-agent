@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from wheel_agent.rgfiles import glob_files
+from wheel_agent.tools.rgfiles import glob_files
 
 
 def at_span(buf: str, cur: int) -> tuple[int, int] | None:

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from wheel_agent.audit import (
+from wheel_agent.tools.audit import (
     environment_fingerprint,
     item_audit,
     redact_tool_args,
@@ -14,21 +14,21 @@ from wheel_agent.audit import (
     workspace_fingerprint,
     workspace_manifest,
 )
-from wheel_agent.compact import compact_history, is_context_overflow
-from wheel_agent.config import AgentConfig
-from wheel_agent.events import EventBus
-from wheel_agent.model import ModelClient, extract_text, extract_thinking
-from wheel_agent.plan import PlanStore
-from wheel_agent.harness import HarnessStore
-from wheel_agent.prompt import ephemeral_items, system_prompt
-from wheel_agent.trust import is_trusted, project_skill_dirs
-from wheel_agent.queue import TurnQueue
-from wheel_agent.reasoning import clamp_effort, reasoning_payload
-from wheel_agent.safety import SafetyGate
-from wheel_agent.session import Session
-from wheel_agent.tools import ToolRuntime, parse_function_calls, tool_schemas
-from wheel_agent.types import APIError, FunctionCall, RunResult, ToolResult, Usage
-from wheel_agent.workspace import Workspace
+from wheel_agent.core.compact import compact_history, is_context_overflow
+from wheel_agent.core.config import AgentConfig
+from wheel_agent.core.events import EventBus
+from wheel_agent.core.model import ModelClient, extract_text, extract_thinking
+from wheel_agent.core.plan import PlanStore
+from wheel_agent.harness.harness import HarnessStore
+from wheel_agent.core.prompt import ephemeral_items, system_prompt
+from wheel_agent.tools.trust import is_trusted, project_skill_dirs
+from wheel_agent.core.queue import TurnQueue
+from wheel_agent.core.reasoning import clamp_effort, reasoning_payload
+from wheel_agent.tools.safety import SafetyGate
+from wheel_agent.core.session import Session
+from wheel_agent.tools.tools import ToolRuntime, parse_function_calls, tool_schemas
+from wheel_agent.core.types import APIError, FunctionCall, RunResult, ToolResult, Usage
+from wheel_agent.tools.workspace import Workspace
 
 Printer = Callable[[str], None]
 DeltaFn = Callable[[str, str], None]

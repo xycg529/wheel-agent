@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from wheel_agent.context import format_project_xml, format_skills_xml, load_project_files, load_skills, today
-from wheel_agent.harness import HarnessState, format_harness_for_prompt
-from wheel_agent.plan import PlanStore
+from wheel_agent.core.context import format_project_xml, format_skills_xml, load_project_files, load_skills, today
+from wheel_agent.harness.harness import HarnessState, format_harness_for_prompt
+from wheel_agent.core.plan import PlanStore
 
 EPHEMERAL_MARK = "[ephemeral context — not a user message]"
 
