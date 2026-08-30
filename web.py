@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
@@ -14,11 +15,18 @@ from urllib.parse import urljoin, urlparse
 
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 EXA_API_URL = "https://api.exa.ai/search"
+TAVILY_API_URL = "https://api.tavily.com/search"
+# Exa's hosted MCP is free but rate-limits anonymous requests per IP; after a
+# 429, skip it entirely for this long instead of burning round trips.
+MCP_RATE_COOLDOWN = 60.0
 MAX_BYTES = 1_000_000
 MAX_REDIRECTS = 5
 SNIPPET_MAX = 400
 TIMEOUT = 30
 USER_AGENT = "wheel-agent/0.1 (+https://github.com/wheel)"
+
+# Monotonic deadline while the keyless Exa MCP is throttled (see MCP_RATE_COOLDOWN).
+_mcp_cooldown_until = 0.0
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -51,11 +59,29 @@ def search_web(query: str, *, num_results: int = 5, api_key: str | None = None) 
         raise WebError("query is empty")
     num_results = max(1, min(int(num_results or 5), 10))
     key = api_key or os.getenv("EXA_API_KEY") or ""
+    errors: list[str] = []
     if key:
-        rows = _search_exa_api(query, num_results, key)
+        try:
+            rows = _search_exa_api(query, num_results, key)
+        except WebError as exc:
+            errors.append(f"Exa API: {exc}")
+            rows = []
     else:
-        rows = _search_exa_mcp(query, num_results)
+        try:
+            rows = _search_exa_mcp(query, num_results)
+        except WebError as exc:
+            errors.append(f"Exa MCP: {exc}")
+            rows = []
+    if errors and not rows:
+        rows = _try_search_tavily(query, num_results, errors)
     if not rows:
+        if errors:
+            hint = (
+                ""
+                if (os.getenv("EXA_API_KEY") or os.getenv("TAVILY_API_KEY"))
+                else "; set EXA_API_KEY or TAVILY_API_KEY for unthrottled search"
+            )
+            raise WebError(" | ".join(errors) + hint)
         return "(no results)"
     lines: list[str] = []
     for i, row in enumerate(rows, start=1):
@@ -134,6 +160,61 @@ def fetch_url(url: str) -> str:
         return f"URL: {current.geturl()}\n\n{text.strip() or '(empty)'}"
 
 
+def _is_rate_limited(message: str) -> bool:
+    lowered = (message or "").lower()
+    return (
+        "rate limit" in lowered
+        or "rate-limit" in lowered
+        or "too many requests" in lowered
+        or "429" in lowered
+    )
+
+
+def _note_rate_limit(message: str) -> None:
+    global _mcp_cooldown_until
+    if _is_rate_limited(message):
+        _mcp_cooldown_until = time.monotonic() + MCP_RATE_COOLDOWN
+
+
+def _try_search_tavily(query: str, num_results: int, errors: list[str]) -> list[dict[str, str]]:
+    """Fallback provider when Exa fails or is rate-limited (mirrors pi-web-access cascades)."""
+    key = os.getenv("TAVILY_API_KEY") or ""
+    if not key:
+        errors.append("Tavily fallback unavailable: TAVILY_API_KEY not set")
+        return []
+    try:
+        return _search_tavily(query, num_results, key)
+    except WebError as exc:
+        errors.append(f"Tavily: {exc}")
+        return []
+
+
+def _search_tavily(query: str, num_results: int, api_key: str) -> list[dict[str, str]]:
+    base = (os.getenv("TAVILY_BASE_URL") or "https://api.tavily.com").rstrip("/")
+    payload = json.dumps(
+        {"query": query, "search_depth": "basic", "max_results": num_results, "include_answer": "basic"}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}/search",
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": USER_AGENT},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise WebError(f"Tavily API failed: {exc}") from exc
+    rows: list[dict[str, str]] = []
+    for item in body.get("results") or []:
+        if not item.get("url"):
+            continue
+        rows.append(
+            {"title": str(item.get("title") or ""), "url": str(item["url"]), "snippet": _clip_snippet(str(item.get("content") or ""))}
+        )
+    return rows
+
+
 def _search_exa_api(query: str, num_results: int, api_key: str) -> list[dict[str, str]]:
     payload = json.dumps({"query": query, "type": "auto", "numResults": num_results}).encode("utf-8")
     req = urllib.request.Request(
@@ -162,6 +243,8 @@ def _search_exa_api(query: str, num_results: int, api_key: str) -> list[dict[str
 
 
 def _search_exa_mcp(query: str, num_results: int) -> list[dict[str, str]]:
+    if time.monotonic() < _mcp_cooldown_until:
+        raise WebError("Exa free MCP rate-limited (cooldown active); set EXA_API_KEY or TAVILY_API_KEY")
     payload = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -184,10 +267,22 @@ def _search_exa_mcp(query: str, num_results: int) -> list[dict[str, str]]:
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = f"HTTP {exc.code}: {exc.reason}"
+        try:
+            detail += f" — {exc.read().decode('utf-8', 'replace')[:200]}"
+        except Exception:
+            pass
+        _note_rate_limit(detail)
+        raise WebError(f"Exa MCP failed: {detail}") from exc
     except Exception as exc:
         raise WebError(f"Exa MCP failed: {exc}") from exc
-    parsed = _parse_mcp_body(body)
-    text = _mcp_text(parsed)
+    try:
+        parsed = _parse_mcp_body(body)
+        text = _mcp_text(parsed)
+    except WebError as exc:
+        _note_rate_limit(str(exc))
+        raise
     try:
         data = json.loads(text)
         results = data.get("results") if isinstance(data, dict) else None
