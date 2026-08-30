@@ -163,6 +163,16 @@ class LiveTurn:
 
     def finish_say(self, text: str) -> None:
         body = text or self._text
+        if not body.strip():
+            # Whitespace-only text (e.g. a reasoner model emitting bare newlines
+            # between thinking and a tool call): erase the open block, print no frame.
+            if self._open == "text" and style.is_tty():
+                style.replace_last_rows(
+                    style.open_block_rows(self._text), "", reserved_bottom=STATE.footer.height()
+                )
+            self._open = None
+            self.text = True
+            return
         rendered = style.frame("say", render_markdown(body))
         if self._open == "text" and style.is_tty():
             style.replace_last_rows(
