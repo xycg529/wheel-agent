@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import atexit
+import collections
 import os
 import select
 import sys
+import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -134,6 +136,38 @@ def _fd_pending(fd: int, timeout: float = 0.0) -> bool:
     return bool(ready)
 
 
+# Bytes the DSR (cursor-position) query had to consume while waiting for the
+# terminal's report but that were NOT the report — i.e. user input that arrived
+# mid-query. Stashed here so the key reader gets them back instead of losing
+# them (on a pty harness the report never comes, so the whole query window is
+# at risk of eating a typed line). Stored as ints (bytes iterate to ints); the
+# pop re-wraps each one into a 1-byte bytes object.
+_INPUT_STASH: "collections.deque[int]" = collections.deque()
+_STASH_LOCK = threading.Lock()
+
+
+def _stash_input(data: bytes) -> None:
+    if data:
+        with _STASH_LOCK:
+            _INPUT_STASH.extend(data)
+
+
+def _pop_stashed() -> bytes | None:
+    with _STASH_LOCK:
+        if not _INPUT_STASH:
+            return None
+        return bytes([_INPUT_STASH.popleft()])
+
+
+def _read_byte(fd: int, timeout: float | None = None) -> bytes | None:
+    stashed = _pop_stashed()
+    if stashed is not None:
+        return stashed
+    if timeout is not None and not _fd_pending(fd, timeout):
+        return None
+    return os.read(fd, 1)
+
+
 def _utf8_len(lead: int) -> int:
     """Continuation bytes needed for a UTF-8 lead byte."""
     if lead & 0xF0 == 0xE0:
@@ -141,12 +175,6 @@ def _utf8_len(lead: int) -> int:
     if lead & 0xF8 == 0xF0:
         return 3
     return 1
-
-
-def _read_byte(fd: int, timeout: float | None = None) -> bytes | None:
-    if timeout is not None and not _fd_pending(fd, timeout):
-        return None
-    return os.read(fd, 1)
 
 
 def decode_csi(params: str, final: str) -> str:
@@ -233,7 +261,25 @@ def cursor_vert(buf: str, cur: int, delta: int) -> int | None:
 
 
 def query_cursor_row(fd: int) -> int | None:
-    """Ask the terminal for the current cursor row (\\033[6n); None on timeout."""
+    """Ask the terminal for the current cursor row (\\033[6n); None on timeout.
+
+    The report and typed input share the same fd, so the waiting read loop can
+    only consume bytes to find the report. Anything consumed that is not the
+    report itself is stashed (via _INPUT_STASH) for the key reader instead of
+    being dropped — otherwise a query issued while input is in flight eats the
+    user's line (a real terminal answers in ms; a pty never answers, making
+    the whole window fatal).
+    """
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return None
+    try:
+        if select.select([fd], [], [], 0.0)[0]:
+            return None  # input already waiting — leave it for the reader
+    except (InterruptedError, ValueError, OSError):
+        return None
+    with _STASH_LOCK:
+        if _INPUT_STASH:
+            return None  # stashed input pending — skip the query
     with style.OUTPUT_LOCK:
         sys.stdout.write("\033[6n")
         sys.stdout.flush()
@@ -242,21 +288,26 @@ def query_cursor_row(fd: int) -> int | None:
         try:
             ready, _, _ = select.select([fd], [], [], 0.05)
         except (InterruptedError, ValueError, OSError):
-            return None
+            break
         if not ready:
-            return None
+            break
         chunk = os.read(fd, 1)
         if not chunk:
-            return None
+            break
         buf += chunk
-        if not buf.endswith(b"R"):
-            continue
-        if not buf.startswith(b"\x1b[") or b";" not in buf:
-            return None
+        if buf.startswith(b"\x1b[") and b";" in buf and buf.endswith(b"R"):
+            break
+    if buf.startswith(b"\x1b["):
+        end = buf.find(b"R")
+        head, leftover = buf[: end + 1], buf[end + 1 :]
         try:
-            return int(buf[2 : buf.index(b";")])
-        except ValueError:
-            return None
+            row = int(head[2 : head.index(b";")])
+        except (ValueError, IndexError):
+            row, leftover = None, buf  # not a report after all — all input
+        _stash_input(leftover)
+        return row
+    _stash_input(buf)
+    return None
 
 
 def _read_key(fd: int, timeout: float | None = None) -> str | None:
@@ -428,7 +479,10 @@ class LineEditor:
         if pasting:
             return []
         if buf.startswith("/") and "\n" not in buf:
-            return slash_matches(buf)
+            # words (set via set_words) carries /skill:name and /provider x
+            # variants the static SLASH_CATALOG doesn't have — merge so Tab
+            # completes them in the custom editor too, not just readline.
+            return slash_matches(buf, self.words) or slash_matches(buf)
         if not self.at_files:
             return []
         token = at_token(buf, cur)
