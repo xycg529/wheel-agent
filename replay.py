@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -158,8 +159,13 @@ def copy_workspace(src: str | Path, dest: str | Path) -> Path:
         if child.name in _COPY_SKIP:
             continue
         target = dest / child.name
-        if child.is_dir():
-            shutil.copytree(child, target, ignore=shutil.ignore_patterns(*_COPY_SKIP))
+        if child.is_symlink():
+            # Preserve symlinks verbatim: shutil.copy2/copytree follow them,
+            # so `link -> .env` became a real copy of .env and the replay
+            # workspace fingerprint drifted from the recorded one.
+            target.symlink_to(os.readlink(child))
+        elif child.is_dir():
+            shutil.copytree(child, target, ignore=shutil.ignore_patterns(*_COPY_SKIP), symlinks=True)
         elif child.is_file():
             shutil.copy2(child, target)
     return dest

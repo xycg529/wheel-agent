@@ -45,11 +45,17 @@ def list_at_files(root: str | Path, token: str, limit: int = 12) -> list[str]:
         prefix = prefix[2:]
     root = Path(root)
     hits: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    root_real = root.resolve()
     for path in glob_files(root, "*", limit=200):
         try:
-            rel = path.resolve().relative_to(root.resolve()).as_posix()
-        except ValueError:
+            real = path.resolve()
+            rel = real.relative_to(root_real).as_posix()
+        except (OSError, RuntimeError, ValueError):
             continue
+        if str(real) in seen:
+            continue
+        seen.add(str(real))
         low = rel.lower()
         name = Path(rel).name.lower()
         if prefix == "":

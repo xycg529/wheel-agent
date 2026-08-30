@@ -166,11 +166,18 @@ def _glob_re(pattern: str) -> re.Pattern[str]:
 
 
 def _glob_walk(root: Path, pattern: str, limit: int) -> list[Path]:
+    # Symlinks are skipped (like `rg --files`): a symlink and its target would
+    # otherwise both surface, and any resolve() downstream collapses them to
+    # one real path — the same file listed twice under different names.
     hits: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        dirnames[:] = [
+            d for d in dirnames if d not in SKIP_DIRS and not (Path(dirpath) / d).is_symlink()
+        ]
         for name in filenames:
             path = Path(dirpath) / name
+            if path.is_symlink():
+                continue
             rel = str(path.relative_to(root))
             if _name_matches(name, rel, pattern):
                 hits.append(path)
