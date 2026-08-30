@@ -9,7 +9,7 @@ from typing import Any
 
 from wheel_agent.config import AgentConfig
 from wheel_agent.evalkit import CheckResult, EvalReport, TaskOutcome, eval_agent_config
-from wheel_agent.evals.swe_lite import DATASET, INSTANCE_IDS, INSTANCE_IDS_TINY
+from wheel_agent.evals.swe_lite import DATASET, DATASETS, INSTANCE_IDS, INSTANCE_IDS_TINY
 from wheel_agent.loop import run_agent
 from wheel_agent.model import ModelClient
 from wheel_agent.replay import replay_run
@@ -22,12 +22,15 @@ def default_swe_work_root() -> Path:
     return Path.home() / ".wheel" / "eval" / "swe-runs"
 
 
-def load_lite_rows(ids: tuple[str, ...] | list[str] = INSTANCE_IDS) -> dict[str, dict[str, Any]]:
+def load_lite_rows(
+    ids: tuple[str, ...] | list[str] = INSTANCE_IDS,
+    dataset: str = DATASET,
+) -> dict[str, dict[str, Any]]:
     try:
         from datasets import load_dataset
     except ImportError as exc:
         raise RuntimeError("SWE-bench live eval needs the datasets package: pip install 'wheel-agent[eval]'") from exc
-    ds = load_dataset(DATASET, split="test")
+    ds = load_dataset(dataset, split="test")
     wanted = set(ids)
     rows = {}
     for row in ds:
@@ -38,8 +41,13 @@ def load_lite_rows(ids: tuple[str, ...] | list[str] = INSTANCE_IDS) -> dict[str,
             break
     missing = [iid for iid in ids if iid not in rows]
     if missing:
-        raise RuntimeError(f"missing SWE-bench Lite instances: {missing[:5]}")
+        raise RuntimeError(f"missing {dataset} instances: {missing[:5]}")
     return rows
+
+
+def suite_name(dataset: str, count: int) -> str:
+    short = dataset.rsplit("_", 1)[-1].lower()  # SWE-bench_Lite -> lite
+    return f"swe-{short}-{count}"
 
 
 def checkout_repo(row: dict[str, Any], dest: Path) -> None:
@@ -127,15 +135,17 @@ def evaluate_swe(
     work_root: str | Path,
     replay: bool = True,
     instance_ids: tuple[str, ...] | list[str] | None = None,
+    dataset: str = DATASET,
 ) -> EvalReport:
     ids = tuple(instance_ids or INSTANCE_IDS_TINY)
+    suite = suite_name(dataset, len(ids))
     root = Path(work_root)
     root.mkdir(parents=True, exist_ok=True)
     try:
-        rows = load_lite_rows(ids)
+        rows = load_lite_rows(ids, dataset=dataset)
     except Exception as exc:
         outcomes = [TaskOutcome(iid, False, [], None, status="error") for iid in ids]
-        return EvalReport(suite=f"swe-lite-{len(ids)}", outcomes=outcomes, status="error", error=str(exc))
+        return EvalReport(suite=suite, outcomes=outcomes, status="error", error=str(exc))
     eval_config = eval_agent_config(config, config.runs_dir, 50)
     outcomes: list[TaskOutcome] = []
     preds: list[dict[str, str]] = []
@@ -152,7 +162,7 @@ def evaluate_swe(
                 live,
                 eval_config,
                 model,
-                extra_meta={"suite": f"swe-lite-{len(ids)}", "task_id": iid},
+                extra_meta={"suite": suite, "task_id": iid},
             )
             patch = git_diff(live)
             protected = protected_paths_changed(live)
@@ -200,7 +210,7 @@ def evaluate_swe(
         eval_status, resolved, eval_error = "agent_only", set(), ""
     else:
         eval_status, resolved, eval_error = _run_official_eval(
-            pred_path, eval_config.provider.model, ids, root
+            pred_path, eval_config.provider.model, ids, root, dataset=dataset
         )
     for outcome in outcomes:
         if eval_status == "agent_only":
@@ -213,11 +223,11 @@ def evaluate_swe(
             outcome.checks.append(CheckResult("official_evaluator", False, eval_error))
         elif outcome.status == "complete" and not any(not check.passed for check in outcome.checks):
             outcome.resolved = outcome.task_id in resolved
-    return EvalReport(suite=f"swe-lite-{len(ids)}", outcomes=outcomes, status=eval_status, error=eval_error)
+    return EvalReport(suite=suite, outcomes=outcomes, status=eval_status, error=eval_error)
 
 
 def _run_official_eval(
-    pred_path: Path, model_name: str, ids: tuple[str, ...], work_root: Path
+    pred_path: Path, model_name: str, ids: tuple[str, ...], work_root: Path, dataset: str = DATASET
 ) -> tuple[str, set[str], str]:
     if shutil.which("docker") is None:
         return "unavailable", set(), "Docker is required for the official evaluator"
@@ -228,7 +238,7 @@ def _run_official_eval(
         "-m",
         "swebench.harness.run_evaluation",
         "--dataset_name",
-        DATASET,
+        dataset,
         "--predictions_path",
         str(pred_path),
         "--max_workers",

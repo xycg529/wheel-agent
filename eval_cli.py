@@ -7,18 +7,20 @@ from pathlib import Path
 
 from wheel_agent.config import load_config
 from wheel_agent.evals.polyglot import CATALOGS, JAVA_HAND_DONE
-from wheel_agent.evals.swe_lite import INSTANCE_IDS_CLASSIC5
+from wheel_agent.evals.swe_lite import DATASETS, INSTANCE_IDS_CLASSIC5, INSTANCE_IDS_VERIFIED5
 from wheel_agent.model import make_client
 from wheel_agent.polyglot import default_work_root, evaluate_polyglot
-from wheel_agent.swe import default_swe_work_root, evaluate_swe
+from wheel_agent.swe import default_swe_work_root, evaluate_swe, suite_name
 
 
 def run_swe(args: argparse.Namespace) -> int:
-    ids = [part.strip() for part in args.ids.split(",") if part.strip()] or list(INSTANCE_IDS_CLASSIC5)
+    dataset = DATASETS[args.dataset]
+    default_ids = list(INSTANCE_IDS_CLASSIC5) if args.dataset == "lite" else list(INSTANCE_IDS_VERIFIED5)
+    ids = [part.strip() for part in args.ids.split(",") if part.strip()] or default_ids
     if args.list:
         for iid in ids:
             print(iid)
-        print(f"# {len(ids)} SWE-bench Lite instances", file=sys.stderr)
+        print(f"# {len(ids)} SWE-bench {args.dataset} instances", file=sys.stderr)
         return 0
     if shutil.which("docker") is None:
         print(
@@ -31,12 +33,14 @@ def run_swe(args: argparse.Namespace) -> int:
     work_root.mkdir(parents=True, exist_ok=True)
     config.runs_dir = (work_root / "wheel_runs").resolve()
     print(
-        f"# suite=swe-lite model={config.provider.model} effort={config.effort} "
+        f"# suite={suite_name(dataset, len(ids))} model={config.provider.model} effort={config.effort} "
         f"instances={len(ids)} work_root={work_root}",
         file=sys.stderr,
     )
     model = make_client(config.provider, effort=config.effort)
-    report = evaluate_swe(config, model=model, work_root=work_root, instance_ids=ids, replay=not args.no_replay)
+    report = evaluate_swe(
+        config, model=model, work_root=work_root, instance_ids=ids, replay=not args.no_replay, dataset=dataset
+    )
     sys.stdout.write(report.format())
     (work_root / "report.txt").write_text(report.format(), encoding="utf-8")
     failed = sum(1 for item in report.outcomes if not item.resolved)
@@ -67,8 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     poly.add_argument("--cache", default="", help="polyglot-benchmark clone cache")
     poly.add_argument("--replay", action="store_true")
     poly.add_argument("--list", action="store_true", help="print exercise ids and exit")
-    swe = sub.add_parser("swe", help="SWE-bench Lite subset (official Docker harness)")
-    swe.add_argument("--ids", default="", help="comma-separated instance ids (default: the classic 5)")
+    swe = sub.add_parser("swe", help="SWE-bench Lite/Verified subset (official Docker harness)")
+    swe.add_argument("--dataset", choices=["lite", "verified"], default="lite",
+                     help="lite = SWE-bench Lite (default, classic 5 ids); "
+                          "verified = SWE-bench Verified (default, first 5 ids lexicographic)")
+    swe.add_argument("--ids", default="", help="comma-separated instance ids (default per --dataset)")
     swe.add_argument("--work-root", default="", help="default ~/.wheel/eval/swe-runs")
     swe.add_argument("--no-replay", action="store_true", help="skip the recorded-response replay check")
     swe.add_argument("--list", action="store_true", help="print instance ids and exit")

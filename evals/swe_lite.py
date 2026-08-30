@@ -33,6 +33,24 @@ INSTANCE_IDS: tuple[str, ...] = (
 
 DATASET = "princeton-nlp/SWE-bench_Lite"
 
+DATASETS = {
+    "lite": "princeton-nlp/SWE-bench_Lite",
+    "verified": "princeton-nlp/SWE-bench_Verified",
+}
+
+# SWE-bench Verified test split, first 5 instance_ids in lexicographic order.
+# Frozen (same convention as the Lite set) so a tiny Verified run is
+# reproducible without pulling the dataset just to list ids.
+# Note: all five are astropy — lexicographic consequence; use --ids to
+# override with a hand-picked cross-repo set.
+INSTANCE_IDS_VERIFIED5: tuple[str, ...] = (
+    "astropy__astropy-12907",
+    "astropy__astropy-13033",
+    "astropy__astropy-13236",
+    "astropy__astropy-13398",
+    "astropy__astropy-13453",
+)
+
 # Default tiny set. Three Django issues from the frozen 25; full Lite is 300.
 INSTANCE_IDS_TINY: tuple[str, ...] = (
     "django__django-10914",
