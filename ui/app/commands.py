@@ -1,10 +1,9 @@
-"""Slash-command handlers: /resume, /tree, /graph, /compact, /harness,
-/jobs, /undo, /replay and the session-replay destination helper.
+"""斜杠命令处理器：/resume、/tree、/graph、/compact、/harness、
+/jobs、/undo、/replay 以及 session 重放的目标目录辅助。
 
-Each handler is a thin adapter — parse args, do one thing, render with the
-shared live-UI helpers (live.py). Re-exported from wheel_agent.ui.app so the
-REPL dispatch and the tests keep a single seam.
-"""
+每个 handler 都是薄适配器——解析参数、做一件事、用共享的 live UI
+辅助函数（live.py）渲染。从 wheel_agent.ui.app 重新导出，让 REPL 分发
+和测试保持同一个接缝。"""
 
 from __future__ import annotations
 
@@ -30,6 +29,7 @@ from wheel_agent.tools.tools import drain_job_events, format_jobs, kill_job
 
 
 def handle_replay_session(config: AgentConfig, session: Session, workspace: Path, dest_spec: str = "") -> None:
+    """/replay session：按顺序重放整个 session，默认落 .wheel/session-replay/<id>。"""
     spec = dest_spec.strip()
     if spec.lower() in {"", "go"}:
         dest = workspace / ".wheel" / "session-replay" / session.session_id
@@ -56,6 +56,7 @@ def handle_replay_session(config: AgentConfig, session: Session, workspace: Path
 
 
 def handle_replay(config: AgentConfig, run_id: str, workspace: Path, execute: bool) -> None:
+    """/replay [id] [go]：打印时间线；带 go 时重放一次。"""
     try:
         bus = load_run(config.runs_dir, run_id)
     except FileNotFoundError as exc:
@@ -74,6 +75,7 @@ def handle_replay(config: AgentConfig, run_id: str, workspace: Path, execute: bo
 
 
 def handle_resume(workspace: Path, rest: str, current: Session) -> Session:
+    """/resume [id]：带 id 直接恢复，不带则用选择器挑；重印转录。"""
     spec = rest.strip()
     try:
         if spec:
@@ -98,12 +100,14 @@ def handle_resume(workspace: Path, rest: str, current: Session) -> Session:
 
 
 def _tree_option(row: dict) -> str:
+    """tree 的一行：* 标记路径上的节点，缩进表示深度。"""
     mark = "*" if row["on_path"] else " "
     indent = "  " * int(row["depth"])
     return f"{mark} {indent}{row['id']}  {row['label']}"
 
 
 def handle_tree(session: Session, target: str | None = "", *, jumping: bool = False) -> bool:
+    """/tree [id]：列出会话树；带 id（或选择器选中）则跳转/fork。"""
     spec = (target or "").strip()
     rows = session.tree_rows()
     if not spec and not jumping:
@@ -111,14 +115,14 @@ def handle_tree(session: Session, target: str | None = "", *, jumping: bool = Fa
             print(style.dim("(empty)"))
             return True
         labels = [_tree_option(row) for row in rows]
-        selected = next((i for i, row in enumerate(rows) if row["leaf"]), 0)
+        selected = next((i for i, row in enumerate(rows) if row["leaf"]), 0)   # 默认选中当前叶子
         picked = pick_list(labels, selected)
         if picked is None:
             return True
         spec = rows[picked]["id"]
     if spec or jumping:
         try:
-            session.fork(spec or None)
+            session.fork(spec or None)   # 跳转 = 移动叶子指针（零拷贝）
         except (KeyError, ValueError) as exc:
             print(style.red(str(exc)))
             return True
@@ -134,6 +138,7 @@ def handle_tree(session: Session, target: str | None = "", *, jumping: bool = Fa
 
 
 def handle_graph(session: Session, workspace: Path, runs_dir: Path, rest: str = "") -> None:
+    """/graph：ASCII 图；带 html 时写文件并起本地 HTTP 服务。"""
     graph = build_session_graph(session, runs_dir)
     if not graph.layers and graph.tree.empty():
         print(style.dim("(empty session)"))
@@ -143,12 +148,13 @@ def handle_graph(session: Session, workspace: Path, runs_dir: Path, rest: str = 
         url = serve_graphs(path.parent)
         print(style.green(f"html  {path}"))
         print(style.green(f"http  {url}{path.name}"))
-        print(style.dim("server stops when you quit wheel"))
+        print(style.dim("server stops when you quit wheel"))   # 服务随进程退出关闭
         return
     print(render_ascii(graph), end="")
 
 
 def handle_compact(config: AgentConfig, workspace: Path, session: Session) -> None:
+    """/compact：立即压缩当前会话历史（force=True）。"""
     if not session.items:
         print(style.dim("nothing to compact"))
         return
@@ -167,7 +173,7 @@ def handle_compact(config: AgentConfig, workspace: Path, session: Session) -> No
             force=True,
             plan_text=session.plan.render() if session.plan.steps else "",
         )
-    except Exception as exc:  # /refine guards this the same way: a provider hiccup must not crash the TUI
+    except Exception as exc:  # /refine 同样这么保护：provider 抖动不能搞崩 TUI
         print(style.red(f"compact failed: {exc}"))
         STATE.footer.paint()
         return
@@ -176,7 +182,7 @@ def handle_compact(config: AgentConfig, workspace: Path, session: Session) -> No
     if stats.did:
         session.compactions += 1
         session.last_compact = stats.as_dict()
-    session.persist(rewrite=True)
+    session.persist(rewrite=True)   # 压缩改了前缀：必须重写历史文件并 bump epoch
     if stats.did:
         print(
             style.green(
@@ -191,12 +197,14 @@ def handle_compact(config: AgentConfig, workspace: Path, session: Session) -> No
 
 
 def handle_harness(workspace: Path, session: Session) -> None:
+    """/harness：打印当前 harness（notes+memories）的内容。"""
     store = _harness_store(workspace, session)
     listing = format_harness_for_prompt(store.merged(), max_content=None)
     _emit_clip("harness", "ok", listing, style.cyan)
 
 
 def handle_jobs(rest: str = "") -> None:
+    """/jobs：列出后台 bash 作业；/jobs kill [id] 杀掉一个（不带 id 用选择器）。"""
     spec = rest.strip()
     if not spec:
         print(format_jobs())
@@ -223,6 +231,7 @@ def handle_jobs(rest: str = "") -> None:
 
 
 def flush_jobs() -> bool:
+    """有空时把后台作业的待输出事件打印出来；有打印返回 True。"""
     events = drain_job_events()
     if not events:
         return False
@@ -233,6 +242,7 @@ def flush_jobs() -> bool:
 
 
 def handle_undo(workspace: Path, spec: str = "") -> None:
+    """/undo [n]：撤销最近 n 个 write/edit。"""
     raw = spec.strip() or "1"
     try:
         n = int(raw)
@@ -248,6 +258,7 @@ def handle_undo(workspace: Path, spec: str = "") -> None:
 
 
 def handle_undo_task(workspace: Path, task_id: str = "") -> None:
+    """/undo-task [id]：回滚整个 task 的文件改动（默认最近一个 task）。"""
     store = CheckpointStore.for_workspace(workspace)
     msgs = store.rollback_task(task_id.strip() or None)
     if not msgs:

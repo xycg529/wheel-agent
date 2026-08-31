@@ -1,3 +1,9 @@
+"""wheel 的 TUI 主入口：交互会话循环（session）+ main()。
+
+负责：启动横幅、行编辑器接线、忙时 `>` 输入、斜杠命令分发（dispatch）、
+Ctrl+C 两段式退出。具体渲染在 live.py，命令实现在 commands.py，
+refine 在 refine.py，共享状态在 state.py。"""
+
 from __future__ import annotations
 
 import json
@@ -23,9 +29,9 @@ from wheel_agent.ui.repl import BusyPrompt, LineEditor, _read_key, completion_wo
 from wheel_agent.harness.refine import parse_auto_refine_every
 from wheel_agent.core.session import Session
 
-# Re-exported for main.py and the test seams (tests import wheel_agent.ui.app and
-# touch app.print_transcript / app.ToolSnips / ...); __all__ keeps pyflakes honest
-# about which of these are intentional public names.
+# 为 main.py 和测试接缝重新导出（测试 import wheel_agent.ui.app 并摸
+# app.print_transcript / app.ToolSnips / ...）；__all__ 让 pyflakes
+# 知道哪些是有意公开的。
 __all__ = [
     "LiveTurn",
     "STATE",
@@ -125,16 +131,19 @@ Wheel — 轮子，Loop 绕着转。普通输入当任务；斜杠是指令
 
 
 def _effort_line(config: AgentConfig) -> str:
+    """当前推理档的单行文本（页脚用）。"""
     payload = reasoning_payload(config.effort, config.provider.effort_levels)
     level = payload["effort"] if payload else "off"
     return f"effort  {level}"
 
 
 def _effort_choices(config: AgentConfig) -> tuple[str, ...]:
+    """当前 provider 支持的推理档位。"""
     return tuple(config.provider.effort_levels)
 
 
 def _completion_words(config: AgentConfig, workspace, trusted: bool) -> list[str]:
+    """Tab 补全词表（命令 + provider + skill + 推理档）。"""
     return completion_words(
         config.providers,
         (s.name for s in load_skills(workspace, trusted=trusted)),
@@ -143,6 +152,7 @@ def _completion_words(config: AgentConfig, workspace, trusted: bool) -> list[str
 
 
 def ask_yes_no(prompt: str) -> bool:
+    """向用户要 y/N：工作线程里则通过队列代理到主线程。"""
     queue = STATE.active.get("queue")
     if queue is not None and threading.current_thread() is not threading.main_thread():
         return queue.request_ask(prompt)
@@ -150,7 +160,7 @@ def ask_yes_no(prompt: str) -> bool:
 
 
 def _ask_on_main(prompt: str) -> bool:
-    """Yes/no without input(): nested readline hides the next > prompt."""
+    """不用 input() 的 y/N：嵌套的 readline 会把下一个 > 提示藏掉。"""
     _emit(style.yellow(prompt))
     sys.stdout.write(style.dim("proceed? [y/N] "))
     sys.stdout.flush()
@@ -161,13 +171,20 @@ def _ask_on_main(prompt: str) -> bool:
         sys.stdout.flush()
         STATE.footer.paint()
         return False
-    # Finish the prompt line so the next ┌ ok / error block cannot glue onto it.
+    # 把提示行收尾，否则下一个 ┌ ok / error 块会粘上来。
     sys.stdout.write("\n")
     sys.stdout.flush()
     STATE.footer.paint()
     if line == "":
         return False
     return line.strip().lower() in {"y", "yes"}
+
+
+def _finish_session(session: Session, result) -> None:
+    """任务结束后把轮次/用量写回会话并持久化。"""
+    session.turn_offset += result.turns
+    session.usage.add(result.usage)
+    session.persist(rewrite=True)
 
 
 def run_task(
@@ -177,6 +194,7 @@ def run_task(
     session: Session,
     queue: TurnQueue | None = None,
 ) -> None:
+    """跑一个任务（交互模式）：建模型客户端、接事件/流式回调、跑 run_agent、收尾。"""
     if not provider_ready(config.provider):
         print(
             style.red(
@@ -187,12 +205,12 @@ def run_task(
         return
     STATE.live = LiveTurn()
     STATE.active["session"] = session
-    session.plan.ask = ask_yes_no
+    session.plan.ask = ask_yes_no   # plan 工具的确认/交互走 UI 的 y/N
     session.plan.interactive = True
     _sync_plan_footer(busy=True, session=session)
     model = make_client(config.provider, effort=config.effort, cache_key=session.cache_key)
     if queue is not None:
-        model.abort = queue.abort
+        model.abort = queue.abort   # 中止信号接入模型调用
     STATE.active["model"] = model
     model.on_retry = lambda attempt, message: print_event(
         {"type": "api_retry", "attempt": attempt, "message": message}
@@ -200,7 +218,7 @@ def run_task(
 
     def on_delta(kind: str, chunk: str) -> None:
         if queue is not None and queue.abort.is_set():
-            return
+            return   # 已中止：丢后续增量
         STATE.live.on_delta(kind, chunk)
 
     def on_tool_update(chunk: str) -> None:
@@ -226,16 +244,15 @@ def run_task(
     )
     STATE.live.close()
     STATE.active["last_task_id"] = result.task_id
-    session.turn_offset += result.turns
-    session.usage.add(result.usage)
-    session.persist(rewrite=True)
+    _finish_session(session, result)
     _sync_plan_footer(busy=False, session=session)
     STATE.footer.set(_meter_text(config, session, result.last_usage))
     if config.interactive:
-        maybe_schedule_periodic_refine(config, workspace, session)
+        maybe_schedule_periodic_refine(config, workspace, session)   # 到期的自动 refine
 
 
 def run_json_task(config: AgentConfig, task: str, workspace: Path) -> int:
+    """--json 模式：跑一个任务，stdout 只出一行 JSON；按停止原因返回码。"""
     chat = Session.create(workspace)
     if not provider_ready(config.provider):
         sys.stdout.write(
@@ -256,9 +273,7 @@ def run_json_task(config: AgentConfig, task: str, workspace: Path) -> int:
         session=chat,
         plan=chat.plan,
     )
-    chat.turn_offset += result.turns
-    chat.usage.add(result.usage)
-    chat.persist(rewrite=True)
+    _finish_session(chat, result)
     payload = {
         "text": result.text,
         "stop_reason": result.stop_reason,
@@ -269,10 +284,11 @@ def run_json_task(config: AgentConfig, task: str, workspace: Path) -> int:
         "changed_files": result.changed_files,
     }
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    return 0 if result.stop_reason in {"stop", "max_turns", "plan_rejected"} else 1
+    return 0 if result.stop_reason in {"stop", "max_turns", "plan_rejected"} else 1   # 正常停=0，错误/超轮=1
 
 
 def session(argv: list[str] | None = None) -> int:
+    """主会话入口：配置加载、信任确认、REPL 主循环；返回退出码。"""
     argv = list(sys.argv[1:] if argv is None else argv)
     json_mode = False
     cleaned: list[str] = []
@@ -302,6 +318,7 @@ def session(argv: list[str] | None = None) -> int:
         STATE.footer.paint()
 
     def print_chrome() -> int:
+        """启动横幅：workspace/context/provider/session 信息；返回行数。"""
         cols = max(1, STATE.footer._size()[1] - 1)
         lines: list[str] = []
         for line in style.banner().split("\n"):
@@ -332,11 +349,12 @@ def session(argv: list[str] | None = None) -> int:
         return len(lines)
 
     def on_prompt_idle() -> bool:
+        """行编辑器空闲时调用：有东西要打印（resize/refine/作业）返回 True。"""
         flushed = flush_auto_refine(config, chat)
         jobs = flush_jobs()
         return STATE.footer.consume_resize() or flushed or jobs
 
-    Session.purge_empty(workspace)
+    Session.purge_empty(workspace)   # 清掉空会话，列表不垃圾堆积
     chat = Session.create(workspace)
     STATE.active["session"] = chat
     STATE.footer.arm(reset=True)
@@ -346,15 +364,16 @@ def session(argv: list[str] | None = None) -> int:
         _completion_words(config, workspace, trusted),
         on_idle=on_prompt_idle,
         on_paint=STATE.footer.paint,
-        at_files=lambda tok: list_at_files(workspace, tok),
+        at_files=lambda tok: list_at_files(workspace, tok),   # @ 补全工作区文件
         reserved_bottom=STATE.footer.height,
     )
     busy_prompt = BusyPrompt(STATE.footer)
     prev_winch = None
     if hasattr(signal, "SIGWINCH"):
-        prev_winch = signal.signal(signal.SIGWINCH, lambda _signum, _frame: STATE.footer.notify_resize())
+        prev_winch = signal.signal(signal.SIGWINCH, lambda _signum, _frame: STATE.footer.notify_resize())   # 窗口尺寸变化通知
 
     def abort_active() -> None:
+        """三层中止：队列 abort 旗、运行时中止在跑的工具、模型客户端取消流。"""
         queue = STATE.active.get("queue")
         runtime = STATE.active.get("runtime")
         model = STATE.active.get("model")
@@ -367,6 +386,7 @@ def session(argv: list[str] | None = None) -> int:
             cancel()
 
     def shutdown_ui() -> None:
+        """退出前清理：中止任务、关图服务、恢复 SIGWINCH、解除页脚固定。"""
         abort_active()
         stop_graph_server()
         if prev_winch is not None and hasattr(signal, "SIGWINCH"):
@@ -376,13 +396,13 @@ def session(argv: list[str] | None = None) -> int:
     saw_interrupt = False
 
     def keep_after_interrupt() -> bool:
-        """First Ctrl+C aborts the run and returns to `>`; second quits."""
+        """第一次 Ctrl+C 中止运行并回到 `>`；第二次才退出。"""
         nonlocal saw_interrupt
         if _busy() and not saw_interrupt:
             saw_interrupt = True
             abort_active()
-            # Unpin the `>` row so output resumes at the stream cursor; a plain
-            # print while pinned lands on the input row and smears the footer.
+            # 解掉固定住的 `>` 行，让输出从流式光标继续；固定时普通 print
+            # 会落在输入行上抹掉页脚。
             busy_prompt.hide()
             busy_prompt.buf = ""
             print(style.dim("\ninterrupted — Ctrl+C again to quit"))
@@ -395,7 +415,7 @@ def session(argv: list[str] | None = None) -> int:
         return False
 
     def busy_wait() -> str | None:
-        """Keep a pinned `>` while the worker streams. Echo stays off the say line."""
+        """工作线程流式输出期间保持固定的 `>`；回显不进 say 行。"""
         tty_in = sys.stdin.isatty() and sys.stdout.isatty()
         if not tty_in:
             return _busy_wait_readline()
@@ -413,6 +433,7 @@ def session(argv: list[str] | None = None) -> int:
                 queue = STATE.active.get("queue")
                 waiter = queue.pending_ask() if queue is not None else None
                 if waiter is not None and not waiter._done.is_set():
+                    # 工具在工作线程里问 y/N：临时回到主线程问完再继续忙等
                     prompt.hide()
                     sys.stdout.write("\033[?2004l")
                     sys.stdout.flush()
@@ -443,6 +464,7 @@ def session(argv: list[str] | None = None) -> int:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     def _busy_wait_readline() -> str | None:
+        """非 TTY 的忙等：select 读 stdin，支持 y/N 应答和 steer 行。"""
         while _busy():
             STATE.footer.consume_resize()
             queue = STATE.active.get("queue")
@@ -468,14 +490,14 @@ def session(argv: list[str] | None = None) -> int:
         return None
 
     def start_task(prompt: str) -> None:
+        """起一个前台任务线程（工作线程跑 run_task）。"""
         expanded = expand_skill_command(prompt, workspace, trusted=trusted)
         queue = TurnQueue()
         STATE.active["queue"] = queue
         if sys.stdin.isatty() and sys.stdout.isatty():
-            # Show the busy `>` and seed the stream cursor BEFORE the worker
-            # writes anything: `── turn 1 ──` must continue right under the
-            # committed task line (editor.last_cursor_row), not at the last
-            # scroll row. A DSR query here would race the worker thread.
+            # 在工作线程写任何内容之前显示 busy `>` 并初始化流式光标：
+            # `── turn 1 ──` 必须紧接已提交的任务行（editor.last_cursor_row），
+            # 而不是最后一个滚动行。在这里查 DSR 会和工作线程竞态。
             busy_prompt.buf = ""
             busy_prompt.show(editor.last_cursor_row)
 
@@ -490,19 +512,20 @@ def session(argv: list[str] | None = None) -> int:
                 STATE.active["thread"] = None
                 STATE.active["queue"] = None
                 STATE.active["runtime"] = None
-                STATE.active["model"] = None
+                STATE.active["model"] = None   # 清句柄：下个任务重建
 
         thread = threading.Thread(target=work, name="wheel-run", daemon=True)
         STATE.active["thread"] = thread
         thread.start()
 
     def dispatch(line: str) -> bool:
+        """分发一行输入；返回 False 表示退出。/ 开头才是命令，其余都是任务。"""
         nonlocal config, chat
         text = line.strip()
         if _busy():
             queue: TurnQueue = STATE.active["queue"]
             lowered = text.lower().lstrip("/")
-            if lowered in {"stop", "quit", "exit", "q"}:
+            if text.startswith("/") and lowered in {"stop", "quit", "exit", "q"}:
                 abort_active()
                 if lowered in {"quit", "exit", "q"}:
                     thread = STATE.active.get("thread")
@@ -512,36 +535,38 @@ def session(argv: list[str] | None = None) -> int:
                 _emit(style.dim("aborting…"))
                 STATE.footer.paint()
                 return True
-            if text.lower().startswith("/follow") or text.lower().startswith("follow "):
+            if text.lower().startswith("/follow"):
                 payload = text.split(" ", 1)[1] if " " in text else ""
                 payload = payload.lstrip(":").strip()
-                queue.follow(payload)
+                queue.follow(payload)   # 排队：本轮正常停后再作为新任务投递
                 _emit(style.prefix_block("follow", payload or "(empty)", style.cyan))
                 _emit(style.dim("follow… will run after this task would stop"))
                 STATE.footer.paint()
                 return True
-            if text.lower().startswith("/expand") or text.lower().startswith("expand "):
+            if text.lower().startswith("/expand"):
                 handle_expand(text.split(" ", 1)[1] if " " in text.strip() else "")
                 return True
             if text.startswith("/") and not text.startswith("/skill:"):
                 print(style.dim("agent is running — Enter steers, /follow waits, /expand r3, /stop or Ctrl+C aborts"))
                 return True
             payload = expand_skill_command(text, workspace, trusted=trusted) if text.startswith("/skill:") else text
-            queue.steer(payload)
+            queue.steer(payload)   # 下一轮模型调用就会看到
             _emit(style.prefix_block("steer", payload, style.cyan))
             _emit(style.dim("steering… next model step will see this"))
             STATE.footer.paint()
             return True
+        if not text:
+            return True
         if text.startswith("/skill:"):
+            start_task(text)   # skill 注入始终当任务
+            return True
+        if not text.startswith("/"):
+            # 只有 / 开头的输入是命令；其他一律当任务。
             start_task(text)
             return True
-        slash = text.startswith("/")
-        if slash:
-            text = text[1:].strip()
-            if not text:
-                print(HELP)
-                return True
+        text = text[1:].strip()
         if not text:
+            print(HELP)
             return True
         if text.lower() in {"quit", "exit", "q"}:
             return False
@@ -566,7 +591,7 @@ def session(argv: list[str] | None = None) -> int:
                     return True
                 rest = names[picked]
             try:
-                config = config.with_provider(rest)
+                config = config.with_provider(rest)   # 切 provider = 换模型通道
             except KeyError as exc:
                 print(exc)
                 return True
@@ -666,23 +691,21 @@ def session(argv: list[str] | None = None) -> int:
                 return True
             handle_refine(config, workspace, chat, rest)
             return True
-        if command == "tree":
+        if command in {"tree", "fork"}:
             return handle_tree(chat, rest)
         if command == "graph":
             handle_graph(chat, workspace, config.runs_dir, rest)
             return True
-        if command == "fork":
-            return handle_tree(chat, rest)
         if command == "follow":
-            print(style.dim("no running task to follow"))
+            print(style.dim("no running task to follow"))   # 空闲时 /follow 无意义
             return True
         if command == "stop":
             print(style.dim("nothing to stop"))
             return True
-        if command in {"max-turns", "max_turns"} and not rest:
-            print(f"max_turns  {config.max_turns}  (0=unlimited)")
-            return True
         if command in {"max-turns", "max_turns"}:
+            if not rest:
+                print(f"max_turns  {config.max_turns}  (0=unlimited)")
+                return True
             try:
                 config = config.with_max_turns(int(rest))
             except ValueError as exc:
@@ -690,13 +713,11 @@ def session(argv: list[str] | None = None) -> int:
                 return True
             print(style.green(f"max_turns {config.max_turns}"))
             return True
-        if slash:
-            print(style.dim(f"unknown command  /{command}"))
-            return True
-        start_task(text)
+        print(style.dim(f"unknown command  /{command}"))   # 未知的 / 命令：提示但不退出
         return True
 
     if argv:
+        # 命令行带参数：单任务模式（/ 开头走 dispatch，否则直接同步跑任务）
         joined = " ".join(argv)
         if joined.startswith("/"):
             dispatch(joined)
@@ -711,7 +732,7 @@ def session(argv: list[str] | None = None) -> int:
 
     while True:
         if not _busy():
-            saw_interrupt = False
+            saw_interrupt = False   # 回到空闲后重置两段式 Ctrl+C 计数
         try:
             if _busy():
                 STATE.footer.arm()
@@ -749,4 +770,5 @@ def session(argv: list[str] | None = None) -> int:
 
 
 def main() -> None:
+    """python -m wheel_agent.ui.app 的入口。"""
     raise SystemExit(session())

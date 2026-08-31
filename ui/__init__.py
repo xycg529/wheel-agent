@@ -1,1 +1,1 @@
-"""Terminal UI: REPL, styling, rendering, session graph, replay."""
+"""终端 UI：REPL、样式、渲染、会话图、重放。"""

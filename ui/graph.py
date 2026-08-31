@@ -1,3 +1,8 @@
+"""会话图：把会话树渲染成 ASCII 图（/tree）和 HTML（/graph）。
+
+图上只画对话流（user/say/tool），工具输出/思考/空文本作为透传节点
+跳过；分支（fork）按列并排，当前路径高亮。"""
+
 from __future__ import annotations
 
 import atexit
@@ -15,6 +20,7 @@ from wheel_agent.core.model import item_text
 from wheel_agent.core.session import Session, preview_user_text
 from wheel_agent.tools.tools import parse_function_calls
 
+# 可并行的只读工具：相邻的这类调用在图上并排成一行。
 PARALLEL_TOOLS = {
     "read",
     "ls",
@@ -28,6 +34,8 @@ PARALLEL_TOOLS = {
 
 @dataclass
 class GraphNode:
+    """图上一个节点（user/say/tool）。"""
+
     kind: str
     title: str
     detail: str = ""
@@ -41,29 +49,35 @@ class GraphNode:
 
 @dataclass
 class GraphLayer:
+    """一层（同一时刻的并列节点，如并行工具调用）。"""
+
     nodes: list[GraphNode]
 
 
 @dataclass
 class GraphBlock:
+    """图的一段：若干层 + 若干分支（递归结构）。"""
+
     layers: list[GraphLayer] = field(default_factory=list)
     branches: list[GraphBlock] = field(default_factory=list)
 
     @property
     def on_path(self) -> bool:
+        """这段里有没有在路径上的节点/分支。"""
         if any(node.on_path for layer in self.layers for node in layer.nodes):
             return True
         return any(branch.on_path for branch in self.branches)
 
     def empty(self) -> bool:
+        """是否空段。"""
         return not self.layers and not self.branches
 
 
 @dataclass
 class SessionGraph:
     session_id: str
-    # Linear view: the on-path branch flattened to layers. render_ascii draws
-    # this; the full branch structure stays in `tree` for /tree navigation.
+    # 线性视图：把路径上的分支压平成层。render_ascii 画这个；
+    # 完整分支结构留在 tree 里供 /tree 导航。
     layers: list[GraphLayer]
     runs: list[str] = field(default_factory=list)
     tree: GraphBlock = field(default_factory=GraphBlock)
@@ -71,6 +85,7 @@ class SessionGraph:
 
 
 def build_session_graph(session: Session, runs_dir: str | Path | None = None) -> SessionGraph:
+    """从会话构建图：先建父子索引，再递归遍历可见节点分层分组。"""
     entries = session.entries
     kids: dict[str | None, list[str]] = {}
     for eid in session.order:
@@ -94,10 +109,9 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
             user_n[eid] = n_user
 
     def passthrough(item: dict[str, Any]) -> bool:
-        # Invisible nodes: tool outputs, thinking, and empty assistant text
-        # carry no flow information, so the walk descends through them and
-        # promotes their children — the graph shows conversation flow, not
-        # the raw API item list.
+        # 不可见节点：工具输出、思考、空 assistant 文本不带流程信息，
+        # 遍历时穿过它们并提升它们的子节点——图画的是对话流，
+        # 不是原始 API item 列表。
         kind = item.get("type")
         if kind in {"function_call_output", "reasoning", "thinking"}:
             return True
@@ -108,6 +122,7 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
         return True
 
     def visible_kids(eid: str) -> list[str]:
+        """一个节点的可见子节点（透传节点递归展开）。"""
         found: list[str] = []
         for cid in kids.get(eid, []):
             item = entries[cid].item
@@ -118,9 +133,8 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
         return found
 
     def gather_tools(start: str) -> tuple[list[str], str]:
-        # A run of single-child function_call items is one assistant turn
-        # (possibly parallel tool calls); batch them into a single graph layer
-        # instead of a vertical chain of boxes.
+        """一串单子节点 function_call 是一个 assistant 回合（可能并行工具调用）；
+        合并成一个图层，而不是一串竖着叠的盒子。"""
         batch = [start]
         cur = start
         while True:
@@ -132,6 +146,7 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
             return batch, cur
 
     def build_from(eid: str) -> GraphBlock:
+        """从一个节点开始递归建段：逐层向下，遇到多分支就分叉。"""
         layers: list[GraphLayer] = []
         cur: str | None = eid
         while cur:
@@ -158,6 +173,7 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
     raw_roots = kids.get(None, [])
     visible_roots: list[str] = []
     for rid in raw_roots:
+        # 根节点也可能是透传节点，需要展开。
         if passthrough(entries[rid].item):
             visible_roots.extend(visible_kids(rid))
         else:
@@ -178,6 +194,7 @@ def build_session_graph(session: Session, runs_dir: str | Path | None = None) ->
 
 
 def _flatten_path(block: GraphBlock) -> list[GraphLayer]:
+    """把路径上的分支压平成层列表（线性视图）。"""
     out: list[GraphLayer] = []
     for layer in block.layers:
         nodes = [node for node in layer.nodes if node.on_path]
@@ -200,6 +217,7 @@ def _entry_node(
     errors: dict[str, bool],
     on_path: bool,
 ) -> GraphNode | None:
+    """把一个条目变成用户/say 节点；空 assistant 文本返回 None。"""
     if _is_user(item):
         return _user_node(user_n.get(eid, 0), item, on_path=on_path)
     if _is_assistant(item):
@@ -211,6 +229,7 @@ def _entry_node(
 
 
 def _tool_node(eid: str, item: dict[str, Any], outputs: dict[str, str], errors: dict[str, bool], on_path: bool) -> GraphNode:
+    """把一个 function_call 变成工具节点（参数/结果都脱敏）。"""
     calls = parse_function_calls([item])
     if not calls:
         return GraphNode(kind="tool", title="tool", on_path=on_path)
@@ -231,6 +250,7 @@ def _tool_node(eid: str, item: dict[str, Any], outputs: dict[str, str], errors: 
 
 
 def render_ascii(graph: SessionGraph, *, width: int = 56) -> str:
+    """把图渲染成 ASCII（/tree 命令用）。"""
     block = graph.tree if not graph.tree.empty() else GraphBlock(layers=graph.layers)
     mark = _tree_has_off(block)
     n_branch = max(1, _count_leaves(block)) if not block.empty() else 0
@@ -246,22 +266,25 @@ def render_ascii(graph: SessionGraph, *, width: int = 56) -> str:
 
 
 def _count_leaves(block: GraphBlock) -> int:
+    """数一个段有多少个叶子（分支数）。"""
     if not block.branches:
         return 1 if block.layers else 0
     return sum(_count_leaves(branch) for branch in block.branches)
 
 
 def _tree_has_off(block: GraphBlock) -> bool:
+    """图里是否有不在路径上的节点（决定要不要画 * 标记）。"""
     if any(not node.on_path for layer in block.layers for node in layer.nodes):
         return True
     return any(_tree_has_off(branch) for branch in block.branches)
 
 
 def _render_block(block: GraphBlock, width: int, *, mark_path: bool) -> list[str]:
+    """递归渲染一段：逐层画盒，多分支时按列并排。"""
     lines: list[str] = []
     for i, layer in enumerate(block.layers):
         if i:
-            lines.append(_connector(layer.nodes))
+            lines.append("          |")
         if len(layer.nodes) == 1:
             lines.extend(_box(layer.nodes[0], width, mark_path=mark_path))
         else:
@@ -272,7 +295,7 @@ def _render_block(block: GraphBlock, width: int, *, mark_path: bool) -> list[str
     col_w = max(16, (width - 2 * (n - 1)) // n)
     cols = [_render_block(branch, col_w, mark_path=mark_path) for branch in block.branches]
     if lines:
-        lines.append(_fork_bar(n, col_w))
+        lines.append(_fork_bar(n, col_w))   # 分叉前画一条分叉横杆
     height = max((len(col) for col in cols), default=0)
     padded = [col + [" " * col_w] * (height - len(col)) for col in cols]
     for row in zip(*padded):
@@ -281,6 +304,7 @@ def _render_block(block: GraphBlock, width: int, *, mark_path: bool) -> list[str
 
 
 def _fork_bar(n: int, col_w: int) -> str:
+    """n 列分叉处的横杆（每列中间一个 |）。"""
     caps = []
     for _ in range(n):
         pad = max(0, col_w // 2)
@@ -289,6 +313,7 @@ def _fork_bar(n: int, col_w: int) -> str:
 
 
 def render_html(graph: SessionGraph) -> str:
+    """把图渲染成自包含 HTML（/graph 命令写文件后浏览器打开）。"""
     block = graph.tree if not graph.tree.empty() else GraphBlock(layers=graph.layers)
     cards = _html_block(block)
     runs = ", ".join(html.escape(r) for r in graph.runs) or "(none)"
@@ -402,6 +427,7 @@ def render_html(graph: SessionGraph) -> str:
 
 
 def write_html(graph: SessionGraph, workspace: str | Path) -> Path:
+    """把 HTML 写到工作区 .wheel/graphs/<session_id>.html，返回路径。"""
     root = Path(workspace).resolve() / ".wheel" / "graphs"
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{graph.session_id}.html"
@@ -410,10 +436,12 @@ def write_html(graph: SessionGraph, workspace: str | Path) -> Path:
 
 
 def _is_user(item: dict[str, Any]) -> bool:
+    """是用户消息（摘要消息不算）。"""
     return item.get("role") == "user" and not is_summary_item(item)
 
 
 def _is_assistant(item: dict[str, Any]) -> bool:
+    """是 assistant 消息（工具/思考类 item 不算）。"""
     if item.get("type") in {"function_call", "function_call_output", "reasoning", "thinking"}:
         return False
     return item.get("role") == "assistant" or item.get("type") == "message"
@@ -422,6 +450,7 @@ def _is_assistant(item: dict[str, Any]) -> bool:
 def _user_node(
     n: int, item: dict[str, Any], *, on_path: bool = True
 ) -> GraphNode:
+    """建用户节点（标题带序号，便于 /tree 跳转）。"""
     text = item_text(item)
     return GraphNode(
         kind="user",
@@ -433,6 +462,7 @@ def _user_node(
 
 
 def _assistant_node(eid: str, text: str, *, on_path: bool = True) -> GraphNode:
+    """建 assistant 说话节点（标题统一 say）。"""
     return GraphNode(
         kind="assistant",
         title="say",
@@ -443,6 +473,7 @@ def _assistant_node(eid: str, text: str, *, on_path: bool = True) -> GraphNode:
 
 
 def _tool_groups(nodes: list[GraphNode]) -> list[list[GraphNode]]:
+    """把工具节点分组：连续的并行工具并成一组（并排画），串行工具单独一组。"""
     groups: list[list[GraphNode]] = []
     current: list[GraphNode] = []
     parallel: bool | None = None
@@ -473,13 +504,13 @@ def _status(result: str, is_error: bool = False) -> str:
     low = result.lower()
     if "blocked by safety" in low:
         return "blocked"
-    # Trust the structured is_error the loop persists on tool results; sniffing
-    # "error" in the output text mislabeled legit results like `read error.log`
-    # or `grep error` as errors.
+    # 信任循环存到工具结果上的结构化 is_error；从输出文本里嗅探
+    # "error" 会把 read error.log、grep error 这类合法结果误标成错误。
     return "error" if is_error else "ok"
 
 
 def _args_preview(args: dict[str, Any]) -> str:
+    """把工具参数压成 key: value 多行预览（单值超 80 字符截断）。"""
     if not args:
         return "{}"
     parts = []
@@ -492,11 +523,8 @@ def _args_preview(args: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _connector(nodes: list[GraphNode]) -> str:
-    return "          |"
-
-
 def _box(node: GraphNode, width: int, *, mark_path: bool = False) -> list[str]:
+    """把一个节点渲染成带框的 ASCII 盒。"""
     label = _label(node, mark_path=mark_path)
     body = [label, *node.detail.splitlines()]
     if node.result:
@@ -512,6 +540,7 @@ def _box(node: GraphNode, width: int, *, mark_path: bool = False) -> list[str]:
 
 
 def _row(nodes: list[GraphNode], width: int, *, mark_path: bool = False) -> list[str]:
+    """把几个节点并排成一行（并行工具调用）。"""
     col = max(18, min(36, (width - 2) // max(1, len(nodes))))
     boxes = [_box(node, col, mark_path=mark_path) for node in nodes]
     height = max(len(box) for box in boxes)
@@ -524,6 +553,7 @@ def _row(nodes: list[GraphNode], width: int, *, mark_path: bool = False) -> list
 
 
 def _label(node: GraphNode, *, mark_path: bool = False) -> str:
+    """节点标题行：路径上的节点带 *，工具带状态标记。"""
     star = " *" if mark_path and node.on_path else ""
     if node.kind == "tool":
         flag = f" [{node.status}]" if node.status and node.status != "ok" else ""
@@ -531,10 +561,12 @@ def _label(node: GraphNode, *, mark_path: bool = False) -> str:
     return f"{node.title}{star}"
 
 
+# 这些参数在 HTML 里用 <pre> 块展示（多行/代码）。
 CODE_ARG_KEYS = {"content", "old_string", "new_string", "command", "query"}
 
 
 def _html_args(args: dict[str, Any]) -> str:
+    """工具参数的 HTML（dt/dd 键值对，代码类参数进 <pre>）。"""
     if not args:
         return ""
     rows: list[str] = []
@@ -549,6 +581,7 @@ def _html_args(args: dict[str, Any]) -> str:
 
 
 def _html_card(node: GraphNode) -> str:
+    """一个节点的 HTML 卡片。"""
     kind = "error" if node.status in {"error", "blocked"} else node.kind
     if node.kind == "tool":
         inner = _html_args(node.args)
@@ -574,6 +607,7 @@ def _html_card(node: GraphNode) -> str:
 
 
 def _html_block(block: GraphBlock) -> str:
+    """递归渲染一段成 HTML（层用 .edge 连接，分支用 .split 并排）。"""
     parts: list[str] = []
     for i, layer in enumerate(block.layers):
         if i:
@@ -593,6 +627,7 @@ def _html_block(block: GraphBlock) -> str:
 
 
 def list_session_runs(session_id: str, runs_dir: str | Path | None) -> list[str]:
+    """列出属于该会话的所有 run ID（按修改时间）。"""
     if not runs_dir:
         return []
     root = Path(runs_dir)
@@ -618,11 +653,13 @@ def list_session_runs(session_id: str, runs_dir: str | Path | None) -> list[str]
     return [name for _stamp, name in found]
 
 
+# 会话图 HTTP 服务的单例（/graph 可选起服务，atexit 关）。
 _http: ThreadingHTTPServer | None = None
 _http_root: Path | None = None
 
 
 def serve_graphs(directory: str | Path) -> str:
+    """起一个本地 HTTP 服务托管图文件，返回 URL。同目录复用，换目录重启。"""
     global _http, _http_root
     root = Path(directory).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -630,8 +667,8 @@ def serve_graphs(directory: str | Path) -> str:
         if _http_root == root:
             port = int(_http.server_address[1])
             return f"http://127.0.0.1:{port}/"
-        # The handler's __init__ closure captured the *first* directory; a
-        # different root would 404 on the old server, so restart it.
+        # Handler 的 __init__ 闭包捕获的是*第一个*目录；换目录后老服务会 404，
+        # 所以重启。
         stop_graph_server()
 
     class Handler(SimpleHTTPRequestHandler):
@@ -639,7 +676,7 @@ def serve_graphs(directory: str | Path) -> str:
             super().__init__(*args, directory=str(root), **kwargs)
 
         def log_message(self, format: str, *args: Any) -> None:
-            del format, args
+            del format, args   # 静默访问日志
 
     _http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     _http_root = root
@@ -650,6 +687,7 @@ def serve_graphs(directory: str | Path) -> str:
 
 
 def stop_graph_server() -> None:
+    """关掉图 HTTP 服务。"""
     global _http, _http_root
     server = _http
     _http = None

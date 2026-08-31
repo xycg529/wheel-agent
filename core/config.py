@@ -1,3 +1,8 @@
+"""配置加载：从 .env/环境变量发现并构建 provider 配置。
+
+命名约定：<前缀>_API_KEY / _BASE_URL / _MODEL / _REASONING_LEVELS / 价格变量，
+前缀缺省为 openai；DEFAULT_PROVIDER 选默认，每个前缀对应一个模型。"""
+
 from __future__ import annotations
 
 import os
@@ -12,6 +17,8 @@ from wheel_agent.core.reasoning import infer_effort_levels, normalize, parse_lev
 
 @dataclass(frozen=True)
 class ProviderConfig:
+    """单个 provider 的完整配置（frozen：运行中途不可变，切换靠 replace）。"""
+
     name: str
     api_key: str
     base_url: str
@@ -22,19 +29,21 @@ class ProviderConfig:
     output_price: float = 0.0
     cache_read_price: float = 0.0
     cache_write_price: float = 0.0
+    # API 协议：responses = OpenAI Responses API；chat = Chat Completions。
+    # 两种协议的工具调用/推理/用量字段布局不同，客户端据此分发。
     api: str = "responses"  # responses | chat
 
 
 def provider_ready(provider: ProviderConfig) -> bool:
-    """A provider can serve when it has an API key, or when it points at a
-    local endpoint (localhost) that needs no auth — e.g. Ollama, LM Studio,
-    or the keyless mock server the PTY test scripts spin up. Centralized so
-    the check can't drift between the five call sites that used it inline."""
+    """provider 可用 = 有 API key，或指向免鉴权的本地端点（Ollama、
+    LM Studio、本地 mock 服务器）。五个调用点共用这个判断，避免标准漂移。"""
     return bool(provider.api_key) or "localhost" in (provider.base_url or "")
 
 
 @dataclass
 class AgentConfig:
+    """Agent 运行配置：默认 provider、全部 provider 表、轮次上限、运行目录。"""
+
     provider: ProviderConfig
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     max_turns: int = 0
@@ -43,6 +52,7 @@ class AgentConfig:
     effort: str = "medium"
 
     def with_provider(self, name: str) -> "AgentConfig":
+        """复制一份配置并换默认 provider（/provider 命令用）；未知名直接报错。"""
         key = name.strip().lower()
         if key not in self.providers:
             known = ", ".join(sorted(self.providers)) or "(none)"
@@ -57,11 +67,14 @@ class AgentConfig:
 
 
 def _env(name: str, default: str = "") -> str:
+    """读环境变量并去首尾空白；未设置返回 default。"""
     value = os.getenv(name)
     return default if value is None else value.strip()
 
 
 def _discover_provider_names() -> list[str]:
+    """发现已配置的 provider：PROVIDERS 显式名单优先，
+    否则扫 *_API_KEY / *_BASE_URL；一个都没有时回退 openai。"""
     explicit = [p.strip().lower() for p in _env("PROVIDERS").split(",") if p.strip()]
     if explicit:
         return explicit
@@ -77,7 +90,7 @@ def _discover_provider_names() -> list[str]:
         names.insert(0, "openai")
     if not names:
         names = ["openai"]
-    # Preserve order but drop duplicates.
+    # 保序去重：.env 里同一前缀的多个变量只算一个 provider。
     seen: set[str] = set()
     ordered: list[str] = []
     for name in names:
@@ -88,6 +101,8 @@ def _discover_provider_names() -> list[str]:
 
 
 def normalize_api(raw: str, base_url: str = "") -> str:
+    """把 <前缀>_API 的各种写法归一成 chat|responses；未指定时按 base_url 后缀猜，
+    都不匹配则缺省 responses。"""
     key = (raw or "").strip().lower().replace("-", "_")
     if key in {"chat", "chat_completions", "completions", "v1_chat_completions"}:
         return "chat"
@@ -100,6 +115,7 @@ def normalize_api(raw: str, base_url: str = "") -> str:
 
 
 def strip_endpoint_path(base_url: str) -> str:
+    """剥掉 base_url 尾部的端点路径（/chat/completions 等），SDK 会自己补路径。"""
     url = (base_url or "").rstrip("/")
     lowered = url.lower()
     for suffix in ("/chat/completions", "/completions", "/responses"):
@@ -109,6 +125,8 @@ def strip_endpoint_path(base_url: str) -> str:
 
 
 def _load_provider(name: str) -> ProviderConfig:
+    """按前缀读一个 provider 的全部变量；价格/窗口未配置时按模型名查表，
+    推理档位未配置时按模型名猜。"""
     prefix = name.upper()
     api_key = _env(f"{prefix}_API_KEY") or _env("OPENAI_API_KEY")
     raw_url = _env(f"{prefix}_BASE_URL") or "https://api.openai.com/v1"
@@ -135,6 +153,9 @@ def _load_provider(name: str) -> ProviderConfig:
 
 
 def load_config(env_file: str | Path | None = None, interactive: bool = True) -> AgentConfig:
+    """入口：载入 .env（不覆盖已存在的环境变量），发现 provider，组装 AgentConfig。
+
+    不传 env_file 时默认找包根目录和当前目录的 .env。"""
     if env_file:
         load_dotenv(env_file, override=False)
     else:
@@ -149,7 +170,7 @@ def load_config(env_file: str | Path | None = None, interactive: bool = True) ->
         providers[default] = _load_provider(default)
 
     runs_dir = Path(_env("WHEEL_RUNS_DIR") or ".wheel_runs")
-    # REPL and --json stay unlimited. Eval suites read MAX_TURNS themselves.
+    # REPL 和 --json 都不限轮次；评测脚本自己读 MAX_TURNS。
     max_turns = 0
     effort = normalize(
         _env(f"{providers[default].name.upper()}_REASONING_EFFORT")

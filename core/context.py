@@ -1,3 +1,6 @@
+"""上下文装配：项目指令文件（AGENTS.md/CLAUDE.md）、skills 扫描与
+/skill: 展开、token 估算、XML 片段渲染。全部只读工作区。"""
+
 from __future__ import annotations
 
 import json
@@ -8,9 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-# Context-file precedence: the first name that exists in a directory wins —
-# AGENTS.override.md (per-directory override), then AGENTS.md, then CLAUDE.md;
-# the case variants keep working on case-insensitive filesystems.
+# 上下文文件优先级：同目录里第一个存在者生效——
+# AGENTS.override.md（按目录覆盖）> AGENTS.md > CLAUDE.md；大小写变体照顾不区分大小写的文件系统。
 CONTEXT_NAMES = (
     "AGENTS.override.md",
     "AGENTS.md",
@@ -24,6 +26,8 @@ CONTEXT_NAMES = (
 
 @dataclass
 class Skill:
+    """一个 SKILL.md 的元数据；in_workspace 标记能否被 read 工具直接读。"""
+
     name: str
     description: str
     location: str
@@ -31,6 +35,7 @@ class Skill:
 
 
 def estimate_tokens(text: str) -> int:
+    """粗略估算 token 数：1 token ≈ 4 字符。紧凑判定与截断都用它，只求量级。"""
     return max(1, math.ceil(len(text) / 4)) if text else 0
 
 
@@ -39,10 +44,13 @@ def estimate_item_tokens(item: dict[str, Any]) -> int:
 
 
 def estimate_items_tokens(items: list[dict[str, Any]]) -> int:
+    """一列消息的估算 token 总量（compact 触发判定用）。"""
     return sum(estimate_item_tokens(item) for item in items)
 
 
 def load_project_files(cwd: str | Path, home: str | Path | None = None) -> list[tuple[Path, str]]:
+    """收集项目指令文件：从仓库根到 cwd 逐目录取第一个存在的上下文文件，
+    用户级 ~/.wheel/AGENTS.md 插在队首（全局优先）。"""
     collected: list[tuple[Path, str]] = []
     seen: set[Path] = set()
     for directory in _context_dirs(Path(cwd).resolve()):
@@ -58,6 +66,7 @@ def load_project_files(cwd: str | Path, home: str | Path | None = None) -> list[
             collected.append((path, text))
     user = Path(home).expanduser() if home is not None else Path.home()
     user_file = _context_file(user / ".wheel")
+    # 用户级文件插在队首：全局指令优先于项目目录级指令。
     if user_file is not None and user_file not in seen:
         try:
             text = user_file.read_text(encoding="utf-8")
@@ -74,9 +83,12 @@ def load_skills(
     *,
     trusted: bool = True,
 ) -> list[Skill]:
+    """扫描各层 skills 目录（工作区各级 → 用户级），同名 skill 先发现的胜出。"""
     root = Path(cwd).resolve()
     user = Path(home).expanduser() if home is not None else Path.home()
     dirs: list[tuple[Path, bool]] = []
+    # 工作区级 skills 需要 trusted：不可信工作区的 skill 不注入系统提示，
+    # 防提示注入；用户级始终加载。
     if trusted:
         for directory in _context_dirs(root):
             dirs.append((directory / ".wheel" / "skills", True))
@@ -102,11 +114,12 @@ def load_skills(
 
 
 def parse_skill(path: Path, *, in_workspace: bool = True) -> Skill | None:
+    """解析 SKILL.md：frontmatter 里必须有 description 才算有效 skill。"""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         text = ""
-    description = _frontmatter_description(text)
+    description = _frontmatter_field(text, "description")
     if not description:
         return None
     name = _frontmatter_field(text, "name") or path.parent.name
@@ -120,6 +133,8 @@ def expand_skill_command(
     *,
     trusted: bool = True,
 ) -> str:
+    """把 /skill:name 开头的输入展开成完整任务文本：读入 SKILL.md 正文，
+    包进 <skill> 标签并标注参考路径，后面跟着用户额外输入。"""
     raw = text.strip()
     if not raw.startswith("/skill:"):
         return text
@@ -136,6 +151,7 @@ def expand_skill_command(
         return text
     body = _strip_frontmatter(content).strip()
     base = str(Path(skill.location).parent)
+    # 正文可能引用同目录文件，标注基准路径让模型能拼出绝对路径。
     block = (
         f'<skill name="{skill.name}" location="{skill.location}">\n'
         f"References are relative to {base}.\n\n{body}\n</skill>"
@@ -144,6 +160,7 @@ def expand_skill_command(
 
 
 def format_project_xml(files: list[tuple[Path, str]]) -> str:
+    """把项目指令文件渲染成 <project_context> XML，插入系统提示。"""
     if not files:
         return ""
     parts = ["<project_context>", "", "Project-specific instructions and guidelines:", ""]
@@ -157,6 +174,7 @@ def format_project_xml(files: list[tuple[Path, str]]) -> str:
 
 
 def format_skills_xml(skills: list[Skill]) -> str:
+    """把 skill 列表渲染成 <available_skills> XML（只放元数据，正文靠 /skill: 按需加载）。"""
     if not skills:
         return ""
     parts = [
@@ -175,10 +193,12 @@ def format_skills_xml(skills: list[Skill]) -> str:
 
 
 def today() -> str:
+    """本地日期 ISO 串（ephemeral 上下文里的 Current date）。"""
     return datetime.now().astimezone().date().isoformat()
 
 
 def _context_dirs(cwd: Path) -> list[Path]:
+    """从 cwd 向上走到仓库根（.git 处停）的目录链，返回根到 cwd 的顺序。"""
     dirs: list[Path] = []
     cur = cwd
     seen: set[Path] = set()
@@ -196,6 +216,7 @@ def _context_dirs(cwd: Path) -> list[Path]:
 
 
 def _context_file(directory: Path) -> Path | None:
+    """目录里按优先级找上下文文件；都不存在返回 None。"""
     for name in CONTEXT_NAMES:
         candidate = directory / name
         if candidate.is_file():
@@ -203,28 +224,22 @@ def _context_file(directory: Path) -> Path | None:
     return None
 
 
-def _frontmatter_block(text: str) -> str:
+def _frontmatter_field(text: str, name: str) -> str:
+    """读 frontmatter 里一个键的值（无引号）；没有 frontmatter 返回空。"""
     if not text.startswith("---"):
         return ""
     end = text.find("\n---", 3)
     if end < 0:
         return ""
-    return text[3:end]
-
-
-def _frontmatter_field(text: str, name: str) -> str:
     key = name.lower() + ":"
-    for line in _frontmatter_block(text).splitlines():
+    for line in text[3:end].splitlines():
         if line.strip().lower().startswith(key):
             return line.split(":", 1)[1].strip().strip("\"'")
     return ""
 
 
-def _frontmatter_description(text: str) -> str:
-    return _frontmatter_field(text, "description")
-
-
 def _strip_frontmatter(text: str) -> str:
+    """剥掉开头的 --- frontmatter 块，只留正文。"""
     if not text.startswith("---"):
         return text
     end = text.find("\n---", 3)
@@ -234,6 +249,7 @@ def _strip_frontmatter(text: str) -> str:
 
 
 def _xml_escape(text: str) -> str:
+    """XML 转义：skill 名/描述来自用户文件，插入标签前必须转义。"""
     return (
         text.replace("&", "&amp;")
         .replace("<", "&lt;")
@@ -243,6 +259,7 @@ def _xml_escape(text: str) -> str:
 
 
 def tag_lines(text: str, tag: str) -> list[str]:
+    """从文本里抓 <tag>...</tag> 内的行（harness 解析 <memories>/<rules> 用）。"""
     match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.S)
     if not match:
         return []

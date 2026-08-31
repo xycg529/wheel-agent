@@ -1,3 +1,7 @@
+"""模型客户端：OpenAI Responses 与 Chat Completions 两种协议的适配，
+统一成同一份 output item 列表；另有重试、可中断等待、流式增量、
+用量解析、错误归类（瞬时/参数/其他）。"""
+
 from __future__ import annotations
 
 import json
@@ -12,8 +16,10 @@ from wheel_agent.core.config import ProviderConfig
 from wheel_agent.core.reasoning import reasoning_payload
 from wheel_agent.core.types import APIError, Item, ModelResponse, Usage
 
+# 流式增量回调：（"text"|"thinking", 片段）。
 DeltaFn = Callable[[str, str], None]
 
+# Responses 流里文本/思考增量的事件类型（各家代理命名略有差异，列全集）。
 TEXT_DELTA_TYPES = {"response.output_text.delta", "response.text.delta"}
 THINKING_DELTA_TYPES = {
     "response.reasoning_summary_text.delta",
@@ -24,6 +30,8 @@ THINKING_DELTA_TYPES = {
 
 
 class ModelClient(Protocol):
+    """客户端抽象：两种协议 + 录制脚本（replay）都实现这一个 complete()。"""
+
     def complete(
         self,
         input_items: list[Item],
@@ -34,6 +42,7 @@ class ModelClient(Protocol):
 
 
 def item_to_dict(item: Any) -> Item:
+    """把 SDK 对象/dict 统一转成 dict（不同 SDK 版本返回类型不一样）。"""
     if isinstance(item, dict):
         return item
     if hasattr(item, "model_dump"):
@@ -44,10 +53,13 @@ def item_to_dict(item: Any) -> Item:
 
 
 def extract_thinking(output: list[Item]) -> str:
+    """从响应 items 里把所有思考/推理文本按序拼出来（UI 展示用）。"""
     chunks: list[str] = []
     for item in output:
         kind = item.get("type")
         if kind in {"reasoning", "thinking"}:
+            # 思考文本可能在 thinking 字段、summary 列表、或 content 的
+            # reasoning_text/summary_text 分片里，三种都收。
             if item.get("thinking"):
                 chunks.append(str(item["thinking"]))
             summary = item.get("summary") or []
@@ -87,6 +99,7 @@ def extract_thinking(output: list[Item]) -> str:
 
 
 def extract_text(output: list[Item]) -> str:
+    """从响应 items 里拼出模型可见文本（不含思考）。"""
     chunks: list[str] = []
     for item in output:
         if item.get("type") == "message":
@@ -105,6 +118,7 @@ def extract_text(output: list[Item]) -> str:
 
 
 def _nested(obj: Any, *names: str) -> Any:
+    """按路径逐层取 dict/对象嵌套字段，中途断了返回 None。"""
     cur = obj
     for name in names:
         if cur is None:
@@ -116,7 +130,15 @@ def _nested(obj: Any, *names: str) -> Any:
     return cur
 
 
+def _fget(obj: Any, name: str, default: Any = None) -> Any:
+    """dict 或对象都能读的字段访问（openai 各版本 SDK 返回类型不同）。"""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 def _int(value: Any) -> int:
+    """容错转 int：None/非数字一律当 0。"""
     try:
         return int(value or 0)
     except (TypeError, ValueError):
@@ -124,6 +146,7 @@ def _int(value: Any) -> int:
 
 
 def _looks_like_usage(blob: Any) -> bool:
+    """看一个 blob 是不是用量对象（有些响应把 usage 放顶层）。"""
     if isinstance(blob, dict):
         return any(
             key in blob
@@ -136,65 +159,41 @@ def _looks_like_usage(blob: Any) -> bool:
 
 
 def usage_from_response(response: Any) -> Usage:
+    """把两种协议的响应统一成 Usage。
+
+    兼容字段名差异：Responses 用 input_tokens，Chat 用 prompt_tokens；
+    缓存命中在 details.cached_tokens 或 cache_read_input_tokens 里。"""
     if response is None:
         return Usage()
-    usage = getattr(response, "usage", None)
-    if usage is None and isinstance(response, dict):
-        usage = response.get("usage")
+    usage = _fget(response, "usage")
     if usage is None and _looks_like_usage(response):
         usage = response
     if usage is None:
         return Usage()
-    if isinstance(usage, dict):
-        input_tokens = _int(usage.get("input_tokens") or usage.get("prompt_tokens"))
-        output_tokens = _int(usage.get("output_tokens") or usage.get("completion_tokens"))
-        details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
-        cached = _int(
-            (details.get("cached_tokens") if isinstance(details, dict) else None)
-            or usage.get("cache_read_input_tokens")
-            or usage.get("cached_tokens")
-        )
-        cache_write = _int(usage.get("cache_creation_input_tokens") or usage.get("cache_write_tokens"))
-        out_details = usage.get("output_tokens_details") or {}
-        reasoning = _int(out_details.get("reasoning_tokens") if isinstance(out_details, dict) else 0)
-        return Usage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_tokens=cached,
-            cache_write_tokens=cache_write,
-            reasoning_tokens=reasoning,
-        )
-    input_tokens = _int(getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0))
-    output_tokens = _int(getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0))
-    details = getattr(usage, "input_tokens_details", None) or getattr(usage, "prompt_tokens_details", None)
-    cached = _int(
-        _nested(details, "cached_tokens")
-        or getattr(usage, "cache_read_input_tokens", 0)
-        or getattr(usage, "cached_tokens", 0)
-    )
-    cache_write = _int(
-        getattr(usage, "cache_creation_input_tokens", 0) or getattr(usage, "cache_write_tokens", 0)
-    )
-    reasoning = _int(_nested(getattr(usage, "output_tokens_details", None), "reasoning_tokens"))
+    details = _fget(usage, "input_tokens_details") or _fget(usage, "prompt_tokens_details") or {}
     return Usage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cached_tokens=cached,
-        cache_write_tokens=cache_write,
-        reasoning_tokens=reasoning,
+        input_tokens=_int(_fget(usage, "input_tokens") or _fget(usage, "prompt_tokens")),
+        output_tokens=_int(_fget(usage, "output_tokens") or _fget(usage, "completion_tokens")),
+        cached_tokens=_int(
+            _nested(details, "cached_tokens")
+            or _fget(usage, "cache_read_input_tokens")
+            or _fget(usage, "cached_tokens")
+        ),
+        cache_write_tokens=_int(_fget(usage, "cache_creation_input_tokens") or _fget(usage, "cache_write_tokens")),
+        reasoning_tokens=_int(_nested(_fget(usage, "output_tokens_details") or {}, "reasoning_tokens")),
     )
 
 
 def event_type(event: Any) -> str:
-    if isinstance(event, dict):
-        return str(event.get("type") or "")
-    return str(getattr(event, "type", "") or "")
+    """流事件类型（dict/对象都能读）。"""
+    return str(_fget(event, "type", "") or "")
 
 
 def event_delta(event: Any) -> str:
-    raw = event.get("delta") if isinstance(event, dict) else getattr(event, "delta", None)
+    """取流事件里的增量文本；delta 可能是 str 也可能是 {text: …} dict。"""
+    raw = _fget(event, "delta")
     if raw is None:
-        raw = event.get("text") if isinstance(event, dict) else getattr(event, "text", None)
+        raw = _fget(event, "text")
     if raw is None:
         return ""
     if isinstance(raw, str):
@@ -205,12 +204,12 @@ def event_delta(event: Any) -> str:
 
 
 def event_response(event: Any) -> Any:
-    if isinstance(event, dict):
-        return event.get("response")
-    return getattr(event, "response", None)
+    """completed 事件里的最终响应对象。"""
+    return _fget(event, "response")
 
 
 def consume_stream_event(event: Any, on_delta: DeltaFn | None) -> Any | None:
+    """逐个消费流事件：增量文本/思考喂给 on_delta；completed 时返回最终响应。"""
     kind = event_type(event)
     if on_delta and kind in TEXT_DELTA_TYPES:
         chunk = event_delta(event)
@@ -228,13 +227,14 @@ def consume_stream_event(event: Any, on_delta: DeltaFn | None) -> Any | None:
         elif item is not None:
             typ = str(getattr(item, "type", "") or "")
         if typ in {"reasoning", "thinking"}:
-            on_delta("thinking", "")
+            on_delta("thinking", "")   # 空字符串作“进入思考块”信号，UI 切换区块样式
     if kind == "response.completed":
         return event_response(event)
     return None
 
 
 def item_text(item: Item) -> str:
+    """取一条消息的文本内容（content 可能是 str 或分片列表）。"""
     content = item.get("content")
     if isinstance(content, str):
         return content
@@ -251,6 +251,7 @@ def item_text(item: Item) -> str:
 
 
 def tools_to_chat(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Responses 风格的工具声明转成 Chat Completions 的 function 包装。"""
     converted: list[dict[str, Any]] = []
     for spec in tools:
         if spec.get("type") == "function" and isinstance(spec.get("function"), dict):
@@ -270,6 +271,10 @@ def tools_to_chat(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def items_to_chat_messages(items: list[Item], instructions: str = "") -> list[dict[str, Any]]:
+    """统一 item 列表转成 Chat 的 messages。
+
+    难点：Responses 里一次模型输出是“message + N 个 function_call”的并列
+    items，Chat 要求合并进一条 assistant 消息的 tool_calls 字段。"""
     messages: list[dict[str, Any]] = []
     if instructions.strip():
         messages.append({"role": "system", "content": instructions})
@@ -305,6 +310,7 @@ def items_to_chat_messages(items: list[Item], instructions: str = "") -> list[di
         if kind in {"message", "function_call"} or role == "assistant":
             texts: list[str] = []
             calls: list[dict[str, Any]] = []
+            # 把连续同属一次输出的 message + function_call 扫成一个组。
             while index < len(items):
                 cur = items[index]
                 if not isinstance(cur, dict):
@@ -354,6 +360,22 @@ def _delta_str(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _call_parts(call: Any, default_id: str, default_args: str) -> tuple[str, str, Any]:
+    if isinstance(call, dict):
+        fn = call.get("function") or {}
+        call_id = str(call.get("id") or default_id)
+        name = _delta_str(fn.get("name"))
+        arguments = fn.get("arguments") or default_args
+    else:
+        fn = getattr(call, "function", None)
+        call_id = str(getattr(call, "id", None) or default_id)
+        name = _delta_str(getattr(fn, "name", None) if fn is not None else None)
+        arguments = getattr(fn, "arguments", None) if fn is not None else None
+        if arguments is None:
+            arguments = default_args
+    return call_id, name, arguments
+
+
 def chat_message_to_output(message: Any) -> list[Item]:
     output: list[Item] = []
     if isinstance(message, dict):
@@ -382,18 +404,7 @@ def chat_message_to_output(message: Any) -> list[Item]:
     if text:
         output.append(assistant_text(text))
     for index, call in enumerate(tool_calls):
-        if isinstance(call, dict):
-            fn = call.get("function") or {}
-            call_id = str(call.get("id") or f"call_{index}")
-            name = _delta_str(fn.get("name"))
-            arguments = fn.get("arguments") or "{}"
-        else:
-            fn = getattr(call, "function", None)
-            call_id = str(getattr(call, "id", None) or f"call_{index}")
-            name = _delta_str(getattr(fn, "name", None) if fn is not None else None)
-            arguments = getattr(fn, "arguments", None) if fn is not None else None
-            if arguments is None:
-                arguments = "{}"
+        call_id, name, arguments = _call_parts(call, f"call_{index}", "{}")
         if not isinstance(arguments, str):
             arguments = json.dumps(arguments, ensure_ascii=False)
         output.append(function_call_item(call_id, name, arguments))
@@ -454,19 +465,9 @@ class _ChatAssembler:
             if on_delta:
                 on_delta("text", content)
         for call in tool_calls or []:
-            if isinstance(call, dict):
-                index = int(call.get("index") or 0)
-                fn = call.get("function") or {}
-                call_id = _delta_str(call.get("id"))
-                name = _delta_str(fn.get("name"))
-                arguments = fn.get("arguments") or ""
-            else:
-                index = int(getattr(call, "index", 0) or 0)
-                fn = getattr(call, "function", None)
-                call_id = _delta_str(getattr(call, "id", None))
-                name = _delta_str(getattr(fn, "name", None) if fn is not None else None)
-                arguments = getattr(fn, "arguments", None) if fn is not None else None
-                arguments = arguments or ""
+            index = int((call.get("index") if isinstance(call, dict) else getattr(call, "index", 0)) or 0)
+            call_id, name, arguments = _call_parts(call, "", "")
+            arguments = arguments or ""
             slot = self.tools.setdefault(index, {"id": "", "name": "", "arguments": ""})
             if call_id:
                 slot["id"] = call_id
@@ -493,7 +494,10 @@ class _ChatAssembler:
         return chat_message_to_output(fake)
 
 
-class ResponsesClient:
+class _OpenAIBase:
+    """Shared by both API clients: client setup, cancel, the retry/abort
+    wrapper, and drop-one-unsupported-param retries on 400s (proxies vary)."""
+
     def __init__(self, provider: ProviderConfig, effort: str = "medium", cache_key: str | None = None):
         from openai import OpenAI
 
@@ -532,6 +536,78 @@ class ResponsesClient:
             except Exception:
                 pass
 
+    def _call(self, once: Callable[[], Any]) -> Any:
+        try:
+            return _await_abortable(
+                lambda: call_with_retry(
+                    once,
+                    on_retry=getattr(self, "on_retry", None),
+                    abort=getattr(self, "abort", None),
+                ),
+                getattr(self, "abort", None),
+                cancel=self.cancel,
+            )
+        except KeyboardInterrupt:
+            raise
+        except APIError:
+            raise
+        except Exception as exc:
+            raise _to_api_error(self.provider, exc) from exc
+
+    def _once(self, kwargs: dict[str, Any], on_delta: DeltaFn | None) -> Any:
+        if on_delta:
+            try:
+                return self._stream(kwargs, on_delta)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                flag = getattr(self, "abort", None)
+                if flag is not None and flag.is_set():
+                    raise KeyboardInterrupt from exc
+                if not (_is_param_error(exc) or _is_stream_unsupported(exc)):
+                    raise
+                return self._create(kwargs)
+        return self._create(kwargs)
+
+    def _drop_create(self, fn: Callable[..., Any], drop_order: tuple[str, ...], **kwargs: Any) -> Any:
+        """fn(**kwargs); on a param error drop one kwarg (in drop_order) and retry."""
+        pending = dict(kwargs)
+        while True:
+            try:
+                return fn(**pending)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                if not _is_param_error(exc):
+                    raise
+                for key in drop_order:
+                    if key in pending:
+                        pending.pop(key)
+                        break
+                else:
+                    raise
+
+    def _iter_stream(self, stream: Any, on_event: Callable[[Any], Any]) -> Any:
+        """Drain a stream with abort checks; returns the last non-None event value."""
+        final: Any = None
+        try:
+            for event in stream:
+                abort = getattr(self, "abort", None)
+                if abort is not None and abort.is_set():
+                    raise KeyboardInterrupt
+                value = on_event(event)
+                if value is not None:
+                    final = value
+        except KeyboardInterrupt:
+            self.cancel()
+            raise
+        finally:
+            if self._stream_obj is stream:
+                self._stream_obj = None
+        return final
+
+
+class ResponsesClient(_OpenAIBase):
     def complete(
         self,
         input_items: list[Item],
@@ -555,37 +631,7 @@ class ResponsesClient:
             kwargs["prompt_cache_key"] = self.cache_key
             kwargs["prompt_cache_retention"] = "24h"
 
-        def once() -> Any:
-            if on_delta:
-                try:
-                    return self._stream(kwargs, on_delta)
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:
-                    flag = getattr(self, "abort", None)
-                    if flag is not None and flag.is_set():
-                        raise KeyboardInterrupt from exc
-                    if not (_is_param_error(exc) or _is_stream_unsupported(exc)):
-                        raise
-                    return self._create(kwargs)
-            return self._create(kwargs)
-
-        try:
-            response = _await_abortable(
-                lambda: call_with_retry(
-                    once,
-                    on_retry=getattr(self, "on_retry", None),
-                    abort=getattr(self, "abort", None),
-                ),
-                getattr(self, "abort", None),
-                cancel=self.cancel,
-            )
-        except KeyboardInterrupt:
-            raise
-        except APIError:
-            raise
-        except Exception as exc:
-            raise _to_api_error(self.provider, exc) from exc
+        response = self._call(lambda: self._once(kwargs, on_delta))
         output = [item_to_dict(item) for item in (getattr(response, "output", None) or [])]
         return ModelResponse(
             output=output,
@@ -594,52 +640,21 @@ class ResponsesClient:
         )
 
     def _create(self, kwargs: dict[str, Any]) -> Any:
+        """非流式请求；丢参数降级的优先级：扩展参数先丢，reasoning 最后丢。"""
         pending = dict(kwargs)
         pending.pop("stream", None)
-        drop_order = (
-            "include",
-            "prompt_cache_retention",
-            "prompt_cache_options",
-            "prompt_cache_key",
-            "reasoning",
+        return self._drop_create(
+            self.client.responses.create,
+            ("include", "prompt_cache_retention", "prompt_cache_options", "prompt_cache_key", "reasoning"),
+            **pending,
         )
-        while True:
-            try:
-                return self.client.responses.create(**pending)
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                if not _is_param_error(exc):
-                    raise
-                dropped = False
-                for key in drop_order:
-                    if key in pending:
-                        pending.pop(key)
-                        dropped = True
-                        break
-                if not dropped:
-                    raise
 
     def _stream(self, kwargs: dict[str, Any], on_delta: DeltaFn) -> Any:
         pending = dict(kwargs)
         pending["stream"] = True
         stream = self.client.responses.create(**pending)
         self._stream_obj = stream
-        final = None
-        try:
-            for event in stream:
-                abort = getattr(self, "abort", None)
-                if abort is not None and abort.is_set():
-                    raise KeyboardInterrupt
-                completed = consume_stream_event(event, on_delta)
-                if completed is not None:
-                    final = completed
-        except KeyboardInterrupt:
-            self.cancel()
-            raise
-        finally:
-            if self._stream_obj is stream:
-                self._stream_obj = None
+        final = self._iter_stream(stream, lambda event: consume_stream_event(event, on_delta))
         if final is None:
             getter = getattr(stream, "get_final_response", None)
             if callable(getter):
@@ -649,45 +664,7 @@ class ResponsesClient:
         return final
 
 
-class ChatCompletionsClient:
-    def __init__(self, provider: ProviderConfig, effort: str = "medium", cache_key: str | None = None):
-        from openai import OpenAI
-
-        self.provider = provider
-        self.effort = effort
-        self.cache_key = cache_key
-        self.abort = None
-        self.on_retry = None
-        self._stream_obj: Any = None
-        timeout = float(os.getenv("WHEEL_TIMEOUT") or "180")
-        self.client = OpenAI(
-            api_key=provider.api_key or "sk-none",
-            base_url=provider.base_url,
-            timeout=timeout,
-            max_retries=0,
-        )
-
-    def cancel(self) -> None:
-        # Closing the HTTP client on purpose, not just the stream: it is the
-        # only reliable way to abort a *stuck* non-streaming request (the
-        # socket close propagates to the request thread). Safe because a
-        # client instance is per-task and rebuilt after a cancel.
-        stream = self._stream_obj
-        self._stream_obj = None
-        if stream is not None:
-            for closer in (getattr(stream, "close", None), getattr(getattr(stream, "response", None), "close", None)):
-                if callable(closer):
-                    try:
-                        closer()
-                    except Exception:
-                        pass
-        closer = getattr(getattr(self, "client", None), "close", None)
-        if callable(closer):
-            try:
-                closer()
-            except Exception:
-                pass
-
+class ChatCompletionsClient(_OpenAIBase):
     def complete(
         self,
         input_items: list[Item],
@@ -706,37 +683,7 @@ class ChatCompletionsClient:
             kwargs["tools"] = tools_to_chat(tools)
             kwargs["tool_choice"] = "auto"
 
-        def once() -> Any:
-            if on_delta:
-                try:
-                    return self._stream(kwargs, on_delta)
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:
-                    flag = getattr(self, "abort", None)
-                    if flag is not None and flag.is_set():
-                        raise KeyboardInterrupt from exc
-                    if not (_is_param_error(exc) or _is_stream_unsupported(exc)):
-                        raise
-                    return self._create(kwargs)
-            return self._create(kwargs)
-
-        try:
-            response = _await_abortable(
-                lambda: call_with_retry(
-                    once,
-                    on_retry=getattr(self, "on_retry", None),
-                    abort=getattr(self, "abort", None),
-                ),
-                getattr(self, "abort", None),
-                cancel=self.cancel,
-            )
-        except KeyboardInterrupt:
-            raise
-        except APIError:
-            raise
-        except Exception as exc:
-            raise _to_api_error(self.provider, exc) from exc
+        response = self._call(lambda: self._once(kwargs, on_delta))
         if isinstance(response, ModelResponse):
             return response
         message = None
@@ -754,68 +701,28 @@ class ChatCompletionsClient:
         )
 
     def _create(self, kwargs: dict[str, Any]) -> Any:
+        """非流式请求；丢参数降级：reasoning 系先丢，最后丢 tool_choice。"""
         pending = dict(kwargs)
         pending.pop("stream", None)
         pending.pop("stream_options", None)
-        drop_order = ("reasoning_effort", "reasoning", "tool_choice")
-        while True:
-            try:
-                return self.client.chat.completions.create(**pending)
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                if not _is_param_error(exc):
-                    raise
-                dropped = False
-                for key in drop_order:
-                    if key in pending:
-                        pending.pop(key)
-                        dropped = True
-                        break
-                if not dropped:
-                    raise
+        return self._drop_create(
+            self.client.chat.completions.create,
+            ("reasoning_effort", "reasoning", "tool_choice"),
+            **pending,
+        )
 
     def _stream(self, kwargs: dict[str, Any], on_delta: DeltaFn) -> ModelResponse:
         pending = dict(kwargs)
         pending["stream"] = True
         pending["stream_options"] = {"include_usage": True}
-        drop_order = ("reasoning_effort", "reasoning", "tool_choice", "stream_options")
-        stream = None
-        last_exc: Exception | None = None
-        while True:
-            try:
-                stream = self.client.chat.completions.create(**pending)
-                break
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                last_exc = exc
-                if not _is_param_error(exc):
-                    raise
-                dropped = False
-                for key in drop_order:
-                    if key in pending:
-                        pending.pop(key)
-                        dropped = True
-                        break
-                if not dropped:
-                    raise
-        if stream is None:
-            raise last_exc or RuntimeError("chat stream failed")
+        stream = self._drop_create(
+            self.client.chat.completions.create,
+            ("reasoning_effort", "reasoning", "tool_choice", "stream_options"),
+            **pending,
+        )
         self._stream_obj = stream
         assembled = _ChatAssembler()
-        try:
-            for event in stream:
-                abort = getattr(self, "abort", None)
-                if abort is not None and abort.is_set():
-                    raise KeyboardInterrupt
-                assembled.feed(event, on_delta)
-        except KeyboardInterrupt:
-            self.cancel()
-            raise
-        finally:
-            if self._stream_obj is stream:
-                self._stream_obj = None
+        self._iter_stream(stream, lambda event: assembled.feed(event, on_delta))
         return ModelResponse(
             output=assembled.output(),
             usage=usage_from_response(assembled),
@@ -824,6 +731,7 @@ class ChatCompletionsClient:
 
 
 def _is_param_error(exc: Exception) -> bool:
+    """判断是否为 400 参数错误（该丢参数重试，而非整次重试）。"""
     if is_transient_error(exc):
         return False
     status = _status_code(exc)
@@ -836,12 +744,14 @@ def _is_param_error(exc: Exception) -> bool:
 
 
 def _is_stream_unsupported(exc: Exception) -> bool:
+    """端点不支持流式时退回非流式（一些兼容代理会报这个）。"""
     if is_transient_error(exc):
         return False
     text = str(exc).lower()
     return any(token in text for token in ("stream not supported", "streaming is not", "stream=true"))
 
 
+# 临时错误的关键字（429/5xx/网关错误/超时/断连），命中即重试。
 TRANSIENT_MARKERS = (
     "429",
     "500",
@@ -870,6 +780,7 @@ TRANSIENT_MARKERS = (
 
 
 def _status_code(exc: BaseException) -> int | None:
+    """从异常的多个可能属性/响应对象/文本里提取 HTTP 状态码。"""
     for attr in ("status_code", "status", "http_status"):
         value = getattr(exc, attr, None)
         if isinstance(value, int) and value > 0:
@@ -884,6 +795,9 @@ def _status_code(exc: BaseException) -> int | None:
 
 
 def is_transient_error(exc: BaseException) -> bool:
+    """是否临时错误（值得重试）。
+
+    4xx 中只有 408/409/425/429 重试；其余 4xx 是永久性错误，重试也没用。"""
     status = _status_code(exc)
     if status in {408, 409, 425, 429, 500, 502, 503, 504}:
         return True
@@ -896,6 +810,9 @@ def is_transient_error(exc: BaseException) -> bool:
 
 
 def brief_api_error(exc: BaseException) -> str:
+    """把异常压成一行可读的简短描述（给 UI/事件用）。
+
+    网关返回的 HTML 错误页提取 <title>；其余取首行并截断到 180 字符。"""
     status = _status_code(exc)
     raw = str(exc).strip() or exc.__class__.__name__
     if "<html" in raw.lower() or "<title>" in raw.lower():
@@ -914,6 +831,7 @@ def brief_api_error(exc: BaseException) -> str:
 
 
 def _to_api_error(provider: ProviderConfig, exc: BaseException) -> APIError:
+    """把底层异常归一成 APIError，带上 provider/model、是否临时、状态码。"""
     brief = brief_api_error(exc)
     return APIError(
         f"{provider.name}/{provider.model}: {brief}",
@@ -928,7 +846,8 @@ def _await_abortable(
     *,
     cancel: Callable[[], None] | None = None,
 ) -> Any:
-    """Run fn; if abort is set, raise KeyboardInterrupt without waiting it out."""
+    """在后台线程跑 fn，主线程轮询；abort 一旦置位就取消并抛 KeyboardInterrupt，
+    不傻等一个卡死的 HTTP 请求跑完。"""
     if abort is None:
         return fn()
     if abort.is_set():
@@ -965,6 +884,7 @@ def call_with_retry(
     on_retry: Callable[[int, str], None] | None = None,
     abort: Any | None = None,
 ) -> Any:
+    """指数退避重试包装：只对临时错误重试，最多 attempts 次（默认读 WHEEL_API_RETRIES）。"""
     tries = attempts if attempts is not None else int(os.getenv("WHEEL_API_RETRIES") or "4")
     tries = max(1, tries)
     delay = base_delay if base_delay is not None else float(os.getenv("WHEEL_API_RETRY_BASE") or "1")
@@ -990,6 +910,7 @@ def call_with_retry(
 
 
 def _sleep_abortable(seconds: float, sleep: Callable[[float], None], abort: Any | None) -> None:
+    """可中断的 sleep：按 0.1s 切片轮询 abort，避免重试等待期间无法 /stop。"""
     if seconds <= 0:
         return
     if abort is None:
@@ -1003,7 +924,7 @@ def _sleep_abortable(seconds: float, sleep: Callable[[float], None], abort: Any 
 
 
 class ScriptedModel:
-    """Deterministic stand-in used by tests, replay, and offline eval."""
+    """确定性替身：测试、replay、离线评测用，按脚本顺序返回预设输出。"""
 
     def __init__(self, scripts: list[list[Item]] | None = None):
         self.scripts = list(scripts or [])
@@ -1019,6 +940,7 @@ class ScriptedModel:
     ) -> ModelResponse:
         del tools, instructions, on_delta
         self.calls.append(input_items)
+        # 脚本耗尽后返回一个“完成”消息，避免越界。
         if self.index >= len(self.scripts):
             output: list[Item] = [
                 {
@@ -1034,11 +956,13 @@ class ScriptedModel:
 
 
 def function_call_item(call_id: str, name: str, arguments: dict[str, Any] | str) -> Item:
+    """构造一个 function_call item（参数统一存为 JSON 字符串）。"""
     raw = arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
     return {"type": "function_call", "call_id": call_id, "name": name, "arguments": raw}
 
 
 def assistant_text(text: str) -> Item:
+    """构造一条 assistant 文本消息 item。"""
     return {
         "type": "message",
         "role": "assistant",
@@ -1051,6 +975,7 @@ def make_client(
     effort: str = "medium",
     cache_key: str | None = None,
 ) -> ModelClient:
+    """按 provider.api 选客户端：chat → ChatCompletionsClient，否则 ResponsesClient。"""
     if provider.api == "chat":
         return ChatCompletionsClient(provider, effort=effort, cache_key=cache_key)
     return ResponsesClient(provider, effort=effort, cache_key=cache_key)

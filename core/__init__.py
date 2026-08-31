@@ -1,1 +1,1 @@
-"""Agent core: loop, model, session, context, compaction, config, types."""
+"""Agent 核心：循环、模型、会话、上下文、压缩、配置、类型。"""

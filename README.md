@@ -1,31 +1,33 @@
 # Wheel Agent
 
-一个极简但完整的 Python coding agent。一个本地 agent loop，接任意 OpenAI 兼容端点（Responses 或 Chat Completions），配上一套崩溃安全的分叉会话文件、对 prompt cache 友好的历史压缩、文件级 undo、持续学习 harness，还有可回放的运行记录。
-
-目标是可读性，而不是刷榜。全部代码约 11k 行，运行时依赖只有两个：`openai` SDK 和 `python-dotenv`。没有框架，没有 MCP，没有 RPC。一个循环，一个文件，一个终端。想弄懂 coding agent 的完整链路（循环、流式、缓存、压缩、安全、undo、回放），读这个仓库就够了。
-
 > 因为是重复造 Agent 轮子，所以就叫 Wheel Agent。
+
+一个体量小但功能完整的 Python coding agent。一个本地 agent loop，接任意 OpenAI 兼容端点（Responses 或 Chat Completions），配上一套崩溃安全的分叉会话文件、保持前缀缓存的历史压缩、文件级 undo、持续学习 harness，还有可回放的运行记录。
+
+目标是可读性：全部代码约 11k 行，运行时依赖只有两个包（`openai`、`python-dotenv`），没有框架，没有 MCP，没有 RPC。一个循环、一个 JSONL 会话文件、一个终端。coding agent 的完整链路（循环、流式、缓存、压缩、安全、undo、回放）在文中有独立小节，可对照文末模块地图逐块读。
+
+
 
 ## 运行
 
-仓库根目录就是 Python 包 `wheel_agent`。找个父目录把它放进去，装上依赖就能跑：
+环境：推荐 Python 3.12（3.10+ 可用，代码用了 `X | Y` 类型标注）；依赖只有两个包，`openai` 和 `python-dotenv`。
+
+仓库根目录就是 Python 包。包名是 `wheel_agent`（Python 标识符不能带连字符，目录叫 `wheel-agent` 时补一个符号链接即可）：
 
 ```bash
-# 假设仓库克隆到了 ~/src/wheel-agent-gh，包名 = 目录名
-cd ~/src
+cd ~/src                              # 假设仓库在 ~/src/wheel-agent
 python3.12 -m venv .venv && . .venv/bin/activate
 pip install openai python-dotenv
+ln -s wheel-agent wheel_agent         # 让包以 wheel_agent 的名字可导入
+export PYTHONPATH="$PWD"
 
-# 包需要以 wheel_agent 这个名字被找到（目录名不能改）
-export PYTHONPATH=~/src
-python3 -m wheel_agent.ui.app            # 交互 REPL，工作区 = 当前目录
-python3 -m wheel_agent.ui.app "修这个 bug"   # 一次性任务
-python3 -m wheel_agent.ui.app --json "任务"  # stdout 输出一行 JSON
+alias wheel='python -m wheel_agent.ui.app'   # 启动命令，建议写进 ~/.zshrc / ~/.bashrc
+wheel                     # 交互 REPL，工作区 = 当前目录
+wheel "修这个 bug"          # 一次性任务
+wheel --json "任务"         # stdout 输出一行 JSON
 ```
 
-需要 Python 3.10+（代码用了 `X | Y` 类型标注）。
-
-`.env` 放在工作区（或写进环境变量）。最简单的一段：
+配置放在工作区的 `.env`（或写进环境变量）。模板在仓库根目录：`cp .env.example .env` 再填值。最小一段：
 
 ```bash
 OPENAI_API_KEY=sk-...
@@ -51,8 +53,8 @@ DEFAULT_PROVIDER=openai
 > /refine          # 从这段对话提取可复用的经验，写入 harness
 > /undo            # 撤销最近一次 write/edit，不依赖 git
 > /jobs            # 查看后台 bash 作业
-> effort high      # 调推理档位（裸词等价于 /effort）
-> quit
+> /effort high     # 调推理档位
+> /quit
 ```
 
 任务运行中：**回车输入文字 = steer**（并入下一次模型调用）；`/follow 文本` = 任务结束后作为新回合投递；`Ctrl+C` 或 `/stop` = 中止，已完成的回合保留在会话里。
@@ -64,7 +66,7 @@ DEFAULT_PROVIDER=openai
 | `/help` | 本表（`/` 同义） |
 | `/quit` `/exit` `/q` | 退出（Ctrl+C / Ctrl+D 也行） |
 | `/provider [name]` | 切换模型通道（无参数时 ↑↓ 选择） |
-| `/effort [level]` `/think` | 推理档位（↑↓ 选择；裸词 `effort high` 也行） |
+| `/effort [level]` `/think` | 推理档位（↑↓ 选择） |
 | `/compact` | 立即压缩会话历史 |
 | `/undo [n]` | 撤销最近 n 次 write/edit |
 | `/undo-task` | 回滚最近一个任务的全部文件改动 |
@@ -85,7 +87,7 @@ DEFAULT_PROVIDER=openai
 | `/expand r12` | 展开被裁剪的工具输出 |
 | `/max-turns [n]` | 查看或设置回合上限（0 = 不限） |
 
-每个命令都能用裸词触发（`quit`、`tree`、`jobs`），分发表是同一张。
+命令必须以 `/` 开头；非 `/` 开头的输入按任务发给模型。输入 `/` 后 Tab 从这张表补全。
 
 ### 输入编辑器
 
@@ -98,7 +100,7 @@ DEFAULT_PROVIDER=openai
 
 ## Provider 与配置
 
-任意数量的 provider，运行时用 `/provider` 切换。每个 provider 一组前缀变量：
+可配置任意数量的 provider，运行时用 `/provider` 切换；每个 provider 目前对应一个模型（`<前缀>_MODEL`），没有 provider 内的多模型列表。每个 provider 一组前缀变量：
 
 | 变量 | 含义 |
 |---|---|
@@ -117,7 +119,9 @@ DEFAULT_PROVIDER=openai
 
 ## 架构
 
-配套图表见 [docs/diagrams](docs/diagrams)，分别是系统架构、agent 循环时序、会话生命周期状态机、压缩判定流程。
+![Wheel Agent 系统架构](docs/diagrams/architecture.svg)
+
+其余配套图表见 [docs/diagrams](docs/diagrams)：agent 循环时序、会话生命周期状态机、压缩判定流程。
 
 ### 循环（core/loop.py）
 
@@ -131,7 +135,9 @@ system prompt（基础 + 上下文文件 + harness + plan）
   → 直到模型停下 / 触到上限 / 被中止
 ```
 
-没有 planner，没有子 agent 树，没有反思阶段。让它能干活的是把记账做对：
+这是 **ReAct 范式**（Reason + Act）：同一个上下文里，模型每轮交替“推理 → 调工具 → 看结果”，工具输出直接成为下一轮的观察，模型据此自己决定下一步。它没有 Plan-and-Execute 那种“先出完整计划、再由独立执行器逐步跑”的分工；`/plan` 只是同上下文里的一个工具——模型写步骤、用户批准，之后每个步骤仍由主循环执行并更新进度，计划只是上下文里的状态，没有单独的规划阶段。
+
+让它能干活的是把记账做对：
 
 - **回合**是计量单位：一次模型调用加它的工具结果算一回合；`/max-turns` 按回合数。
 - **事件**（core/events.py）是一条扁平流，一次 `emit` 同时喂 TTY 渲染器、JSONL 记录器、审计日志。UI 只是事件流的一个视图，不在循环里。
@@ -149,19 +155,19 @@ system prompt（基础 + 上下文文件 + harness + plan）
 {"type":"item","id":"i003","parent":"i002","item":{"role":"tool", ...}}
 ```
 
-- 每条写入都 fsync。**崩溃最多丢最后一行没写完的记录**，读取端跳过非法 JSON 的尾行。没有 WAL，没有数据库，没有锁文件：文件即日志，树形（每条指向父节点）让分叉免费。
-- `/tree`、`/resume`、`/fork` 都只是树的遍历。跳到某个节点继续输入，就是开了一条新分支。
+- 没有 WAL、数据库或锁文件，文件即日志。每次追加或重写后都 flush + fsync（强制操作系统把缓冲区写入磁盘），掉电不会丢已确认的记录，代价是每次工具调用多一次磁盘同步。每行是一条完整 JSON，**崩溃最多留一行没写完的尾行**，读取端直接跳过。
+- 每条记录带 `parent_id`，整个会话是一棵树，“当前对话”是从根到叶的一条路径。跳到旧节点继续输入 = 把“叶子”指针移回那个节点，新分支与旧前缀共享同一批记录，**分叉零拷贝**。因此 `/tree`、`/resume`、`/fork` 都只是树的遍历。
 - **恢复修复**：崩溃丢掉了工具调用的输出时，加载器补一条合成的 interrupted 输出，保证消息序列对 API 合法。
 - 压缩会重写文件（覆盖语义），但保留 `_saved` 水位，重写后的追加不会重复落盘。
 
-### Prompt cache 纪律（core/compact.py）
+### 前缀缓存策略（core/compact.py）
 
-API 对缓存写入计费，会话中途缓存失效又费钱又费延迟。规则：
+provider 对缓存写入计费、对缓存命中给低延迟，会话中途把前缀缓存打失效又费钱又费时间。规则：
 
-1. **已发送的绝不重写。** 压缩在用户消息边界切一刀，前缀换成一条摘要，近期条目逐字节不动。缓存已经持有的后缀保持有效。
-2. **切点只向前走。** `cache_epoch`（即 API 的 `prompt_cache_key`）只在压缩时递增；两次压缩之间保持不变，前缀缓存保持热。
+1. **已发送的历史绝不改写。** 压缩在用户消息边界切一刀：切点之前的前缀换成一条摘要，切点之后的条目逐字节不动，缓存已持有的部分继续有效。
+2. **切点只向前走，缓存键只在压缩时更换。** 请求里带一个 `prompt_cache_key`（会话的 `cache_epoch`）作为 provider 的缓存分区标识。普通回合只是追加新消息：前缀没变、键没变，缓存持续命中。压缩一旦改写了前缀，旧缓存必然失效，于是键递增、provider 从新键开始重新积累缓存，旧分区不会被错误复用。
 3. **auto-compact 看真实用量触发**，不看 token 估算：provider 报告的输入 token 逼近上下文窗口时触发（页脚计量表显示同一个数）。
-4. **摘要带状态标签**（`<read-files>`、`<modified-files>`），压缩后的模型知道前缀碰过哪些文件。摘要由便宜的一次模型调用生成，天然有损。
+4. **摘要带状态标签**（`<read-files>`、`<modified-files>`），压缩后的模型知道前缀碰过哪些文件。摘要由同通道的一次模型调用（同 provider、同推理档）生成，天然有损。
 5. 对极小会话压缩是无操作：原样返回，epoch 不动。
 
 ### 安全、审批、undo（tools/safety.py、core/checkpoint.py）
@@ -174,8 +180,8 @@ API 对缓存写入计费，会话中途缓存失效又费钱又费延迟。规�
 
 模型通过 `harness` 工具把**耐久笔记**存进全局库（`~/.wheel/harness/`）或会话库，后续每次 system prompt 都带上。这是“跨会话变好”的回路：
 
-- `/refine` 跑一遍便宜的第二模型：这段对话确立了什么耐久经验？产出对 harness 的结构化修改提案。
-- 每份提案带 **CAS 基线**（提案所基于的 harness 状态哈希）。中间状态变了（你手动 refine 过，或后台自动 refine 刚跑完），过期提案**被拒绝而不是应用**，不会静默覆盖新状态。
+- `/refine` 追加一次模型调用（与会话同 provider 同模型，关闭推理档）复盘这段对话：提炼出值得跨会话记住的经验，产出对 harness 的结构化修改提案。
+- 每份提案带 **CAS 基线**（compare-and-swap）：提案规划前先对目标 harness 全量拍一份快照；应用时逐条比对，某个条目与快照不一致（说明规划期间被手动编辑、或另一次 refine 改过），这条编辑标记失败并跳过，不覆盖新状态。
 - `/refine rollback <id>` 回滚某次提取。自动提取在后台线程每 N 个用户回合跑一次，输出排队成普通事件，不和你正在输入的内容交错。
 - harness 状态文件损坏时降级为空状态，应用不崩。
 
@@ -208,7 +214,7 @@ API 对缓存写入计费，会话中途缓存失效又费钱又费延迟。规�
 
 ### 回放（ui/replay.py）
 
-每次运行记录 `events.jsonl`（发生了什么）和 `responses.jsonl`（模型原始响应）。回放的意思是：新工作区、同一任务，但**用录好的响应替换模型**，然后给这次运行分类：
+作用是**离线复现与可复现性审计**。每次运行记录 `events.jsonl`（发生了什么）和 `responses.jsonl`（模型原始响应）。`/replay <run_id> go` 把当时的任务在干净的工作区副本上重跑一遍，但**用录好的响应替换模型**——不调 API、不花钱、结果可复现——然后把重放结果与原记录对比，给出复现程度分类：
 
 | 类别 | 含义 |
 |---|---|
@@ -217,7 +223,7 @@ API 对缓存写入计费，会话中途缓存失效又费钱又费延迟。规�
 | `drift` | 分歧但完成 |
 | `error` | 回放本身出错 |
 
-这是评测数字背后的确定性审计：如果解决率 100% 而回放 exact 率 0%，说明基准测的是模型的随机性，不是 harness 的能力。
+这是评测数字背后的确定性审计：解决率 100% 而回放 exact 率 0%，说明基准量到的是模型随机性；exact 稳定在高位，才说明 harness 本身的行为可复现。
 
 ## 模块地图
 
@@ -262,8 +268,20 @@ wheel_agent/
       __init__.py      进程管线：配置加载、run_task、--json、会话 CLI、分发
   harness/         持续学习
     harness.py       笔记库（CAS、回滚、容错加载）
-    refine.py        经验提取（第二模型遍）
+    refine.py        经验提取（关推理档的复盘调用）
 ```
+
+## 逐段讲解（docs/modules/）
+
+上面每个源文件都有一篇逐段讲解（含行号、设计意图、边界与陷阱）。入口是 [阅读指南](docs/modules/README.md)：5 个阶段的阅读路线、一条请求的完整生命周期（从敲回车到 replay 的 18 步串讲）、核心概念索引。
+
+- [core/loop.py 主循环（19 节）](docs/loop-explained.md)
+- core/：[types](docs/modules/core/types.md) · [config](docs/modules/core/config.md) · [model](docs/modules/core/model.md) · [context](docs/modules/core/context.md) · [truncate](docs/modules/core/truncate.md) · [compact](docs/modules/core/compact.md) · [session](docs/modules/core/session.md) · [events](docs/modules/core/events.md) · [queue](docs/modules/core/queue.md) · [plan](docs/modules/core/plan.md) · [prompt](docs/modules/core/prompt.md) · [reasoning](docs/modules/core/reasoning.md) · [checkpoint](docs/modules/core/checkpoint.md) · [meter](docs/modules/core/meter.md)
+- tools/：[tools](docs/modules/tools/tools.md) · [safety](docs/modules/tools/safety.md) · [workspace](docs/modules/tools/workspace.md) · [audit](docs/modules/tools/audit.md) · [trust](docs/modules/tools/trust.md) · [rgfiles](docs/modules/tools/rgfiles.md) · [web](docs/modules/tools/web.md) · [atfiles](docs/modules/tools/atfiles.md)
+- harness/：[harness](docs/modules/harness/harness.md) · [refine](docs/modules/harness/refine.md)
+- ui/：[app](docs/modules/ui/app.md) · [repl](docs/modules/ui/repl.md) · [live](docs/modules/ui/app-live.md) · [commands](docs/modules/ui/app-commands.md) · [state](docs/modules/ui/app-state.md) · [refine](docs/modules/ui/app-refine.md) · [replay](docs/modules/ui/replay.md) · [style](docs/modules/ui/style.md) · [markdown](docs/modules/ui/markdown.md) · [graph](docs/modules/ui/graph.md)
+
+另：[swe-bench harness 评测记录](docs/swe-bench-harness-eval.md)。
 
 ## 局限
 

@@ -1,63 +1,9 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Wheel Agent · 系统架构</title>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400&display=swap" rel="stylesheet">
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --color-paper:   #f5f5f5;
-      --color-ink:     #2d3142;
-      --color-muted:   #4f5d75;
-      --color-accent:  #eb6c36;
-      --font-sans:     'Geist', 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif;
-      --font-serif:    'Instrument Serif', 'Noto Serif SC', 'Songti SC', serif;
-      --font-mono:     'Geist Mono', ui-monospace, monospace;
-    }
-    body {
-      font-family: var(--font-sans);
-      background: var(--color-paper);
-      color: var(--color-ink);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 3rem 2rem;
-    }
-    .frame { max-width: 1200px; width: 100%; }
-    .eyebrow {
-      font-family: var(--font-mono);
-      font-size: 0.66rem;
-      font-weight: 500;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--color-muted);
-      margin-bottom: 0.5rem;
-    }
-    h1 {
-      font-family: var(--font-serif);
-      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
-      font-weight: 400;
-      letter-spacing: -0.02em;
-      line-height: 1.15;
-      color: var(--color-ink);
-      margin-bottom: 1.5rem;
-    }
-    svg { width: 100%; min-width: 900px; display: block; }
-    .cjk { font-family: 'Geist', 'Noto Sans SC', 'PingFang SC', sans-serif; }
-  </style>
-</head>
-<body>
-  <div class="frame">
-    <p class="eyebrow">System Architecture · Wheel Agent</p>
-    <h1>一个循环 · 一个文件 · 一个终端</h1>
-
-    <svg viewBox="0 0 1000 712" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="wa-arch-title wa-arch-desc">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1000 712" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="wa-arch-title wa-arch-desc">
       <title id="wa-arch-title">Wheel Agent 系统架构</title>
       <desc id="wa-arch-desc">架构图：终端 UI 层的 REPL 与实时渲染，向下进入核心层的 agent 循环，循环右侧连模型客户端与外部的 OpenAI 兼容端点，下连会话存储；支撑层的工具运行时与 harness 笔记库在最下方。</desc>
       <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+SC:wght@400;500;600&amp;family=Noto+Serif+SC:wght@400&amp;display=swap');</style>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
         <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
@@ -193,6 +139,3 @@
       <line x1="768" y1="684" x2="796" y2="684" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
       <text x="804" y="688" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace">EVENTS</text>
     </svg>
-  </div>
-</body>
-</html>
