@@ -12,20 +12,20 @@
 
 环境：推荐 Python 3.12（3.10+ 可用，代码用了 `X | Y` 类型标注）；依赖只有两个包，`openai` 和 `python-dotenv`。
 
-仓库根目录就是 Python 包。包名是 `wheel_agent`（Python 标识符不能带连字符，目录叫 `wheel-agent` 时补一个符号链接即可）：
+仓库是一个标准 Python 包（包目录 `wheel_agent/`，包名 `wheel_agent`），依赖声明在 `pyproject.toml`，装一次后任何目录直接敲 `wheel`：
 
 ```bash
-cd ~/src                              # 假设仓库在 ~/src/wheel-agent
-python3.12 -m venv .venv && . .venv/bin/activate
-pip install openai python-dotenv
-ln -s wheel-agent wheel_agent         # 让包以 wheel_agent 的名字可导入
-export PYTHONPATH="$PWD"
+cd ~/src/wheel-agent                 # 假设仓库在 ~/src/wheel-agent
+uv tool install --editable .         # 一次性安装（uv 建独立环境，无需手动建 venv）
 
-alias wheel='python -m wheel_agent.ui.app'   # 启动命令，建议写进 ~/.zshrc / ~/.bashrc
 wheel                     # 交互 REPL，工作区 = 当前目录
 wheel "修这个 bug"          # 一次性任务
 wheel --json "任务"         # stdout 输出一行 JSON
 ```
+
+没有 uv 的话用 pipx 等价：`pipx install -e .`。装好后 `wheel` 是一个真正的可执行命令，**不需要**再 `source .venv/bin/activate`、`pip install`、建符号链接或 `export PYTHONPATH`。
+
+`--editable` 意味着改了 `wheel_agent/` 里的代码**立即生效**，不用重装。要升级依赖：`uv tool upgrade wheel-agent --force`；卸载：`uv tool uninstall wheel-agent`。
 
 配置放在工作区的 `.env`（或写进环境变量）。模板在仓库根目录：`cp .env.example .env` 再填值。最小一段：
 

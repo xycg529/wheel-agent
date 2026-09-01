@@ -159,7 +159,7 @@ def load_config(env_file: str | Path | None = None, interactive: bool = True) ->
     if env_file:
         load_dotenv(env_file, override=False)
     else:
-        here = Path(__file__).resolve().parent.parent / ".env"
+        here = Path(__file__).resolve().parent.parent.parent / ".env"
         load_dotenv(here, override=False)
         load_dotenv(override=False)
 

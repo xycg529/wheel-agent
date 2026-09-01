@@ -1,0 +1,19 @@
+[project]
+name = "wheel-agent"
+version = "0.1.0"
+description = "Wheel Agent：体量小但功能完整的 Python coding agent"
+requires-python = ">=3.10"
+dependencies = [
+    "openai",
+    "python-dotenv",
+]
+
+[project.scripts]
+wheel = "wheel_agent.ui.app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["wheel_agent*"]
