@@ -1,8 +1,3 @@
-"""Agent 主循环：ReAct 范式的 reason→act→observe 循环。
-
-同一上下文里推理、调工具、看结果，直到模型不再调工具；
-带紧凑、steer/follow 注入、y/N 询问、审计事件、错误归类。"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -35,7 +30,6 @@ from wheel_agent.tools.tools import ToolRuntime, parse_function_calls, tool_sche
 from wheel_agent.core.types import APIError, FunctionCall, RunResult, ToolResult, Usage
 from wheel_agent.tools.workspace import Workspace
 
-# 回调签名：打印一行 / 流式增量（文本，思考标记）/ 工具进度。
 Printer = Callable[[str], None]
 DeltaFn = Callable[[str, str], None]
 ToolUpdateFn = Callable[[str], None]
@@ -62,18 +56,11 @@ def run_agent(
     plan: PlanStore | None = None,
     runtime_out: dict[str, Any] | None = None,
 ) -> RunResult:
-    """跑一个任务直到结束，返回 RunResult。
-
-    这是整个程序的心脏：组装工具/提示/安全门后进入主循环，
-    每步调模型 → 无工具调用则收场（或消化排队输入），有则执行工具、
-    把结果追加进上下文继续。steer 在两次调用之间注入，
-    上下文溢出时强制紧凑后重试。"""
     ws = workspace if isinstance(workspace, Workspace) else Workspace(workspace)
     bus = bus or EventBus.create(config.runs_dir)
     if on_event:
         bus.subscribe(on_event)
     if safety is None:
-        # 默认安全门：把会话里已批准过的 bash 前缀载进记忆，跨轮免重复确认。
         memory = {tuple(row) for row in (session.approvals if session is not None else [])}
         safety = SafetyGate(interactive=config.interactive, ask=ask, memory=memory, workspace=ws.root)
     plan = plan or (session.plan if session is not None else PlanStore(ask=ask, interactive=config.interactive))
@@ -83,19 +70,18 @@ def run_agent(
         interactive=config.interactive,
     )
     runtime = ToolRuntime(ws, safety, on_update=on_tool_update, plan=plan, harness=store)
-    task_id = runtime.begin_task()   # 开一个 checkpoint 任务，之后 /undo-task 用它
+    task_id = runtime.begin_task()
     initial_manifest = workspace_manifest(ws.root)
     initial_workspace_fingerprint = workspace_fingerprint(initial_manifest)
     if runtime_out is not None:
         runtime_out["runtime"] = runtime
         runtime_out["task_id"] = task_id
     tools = tool_schemas(list(runtime.tools.values()))
-    # trusted：工作区可信（或没有项目级 skill 目录）才把项目 skill 注入系统提示。
     trusted = is_trusted(ws.root) or not project_skill_dirs(ws.root)
     instructions = system_prompt(ws.root, trusted=trusted, harness=store.merged())
-    extra_input = ephemeral_items(ws.root, plan)   # 本轮临时上下文（日期/计划），不进历史
+    extra_input = ephemeral_items(ws.root, plan)
     if session is not None:
-        items = session.items   # 别名：循环直接改 session 的视图列表
+        items = session.items
     else:
         items = list(items) if items is not None else []
     _push(items, session, {"role": "user", "content": task})
@@ -108,7 +94,6 @@ def run_agent(
     turns = 0
 
     clamped = clamp_effort(config.effort, config.provider.effort_levels)
-    # agent_start：记录环境/工作区指纹，replay 时用它判定环境是否漂移。
     bus.emit(
         "agent_start",
         workspace=str(ws.root),
@@ -128,7 +113,6 @@ def run_agent(
         user_turn = True
         display_turn = session.user_turns() if session is not None else 1
         while True:
-            # 入口检查 abort：/stop 在上一轮结束后才生效（不打断正在进行的模型调用）。
             if queue and queue.abort.is_set():
                 stop_reason = "aborted"
                 final_text = final_text or "interrupted"
@@ -139,10 +123,9 @@ def run_agent(
                 stop_reason = "max_turns"
                 final_text = final_text or f"Stopped after {config.max_turns} turns."
                 break
-            turn = turn_offset + step   # turn 从会话的偏移续计，跨任务连续编号
+            turn = turn_offset + step
             turns = step
             request_items = items + extra_input
-            # 输入审计：每轮请求的指纹，replay 对比“输入是否一致”。
             input_audit = item_audit(request_items, ws.root)
             input_audit["workspace_fingerprint"] = workspace_fingerprint(workspace_manifest(ws.root))
             bus.emit(
@@ -156,7 +139,6 @@ def run_agent(
             )
             bus.emit("message_start", turn=turn)
             user_turn = False
-            # 模型调用（含上下文溢出时强制紧凑后重试一次）。
             response = _complete_with_overflow(
                 model,
                 items,
@@ -176,7 +158,6 @@ def run_agent(
                 break
             usage.add(response.usage)
             last_usage = response.usage
-            # 记录模型原始响应：replay 用它把模型换成录制脚本重跑。
             bus.record_response(
                 turn,
                 response.output,
@@ -191,7 +172,6 @@ def run_agent(
             if text:
                 final_text = text
             calls = parse_function_calls(response.output)
-            # 调用 plan 工具时不回显正文：确认弹窗已经展示过计划了。
             hide_text = any(call.name == "plan" for call in calls)
             bus.emit(
                 "message_end",
@@ -203,8 +183,6 @@ def run_agent(
                 hide_text=hide_text,
             )
             if not calls:
-                # 无工具调用 = 本轮自然结束；但先看排队输入：
-                # 用户敲的 steer/follow 还没发过模型，就作为新 user 消息补发。
                 pending = []
                 if queue:
                     pending.extend(queue.drain_steer())
@@ -220,8 +198,6 @@ def run_agent(
                 break
             batch = _run_tools(runtime, calls, bus, turn)
             tool_results.extend(batch)
-            # 每个工具结果追加进上下文（模型下一步就能看到）；
-            # write/edit 成功的路径记进 changed_files。
             for call, result in zip(calls, batch):
                 _push(
                     items,
@@ -239,19 +215,17 @@ def run_agent(
                     if path and path not in changed_files:
                         changed_files.append(path)
             if store.dirty:
-                # harness 笔记被改过：系统提示要重拼（笔记已变），
-                # 同时自增缓存纪元——前缀变了，旧缓存不能再命中。
                 store.dirty = False
                 instructions = system_prompt(ws.root, trusted=trusted, harness=store.merged())
                 if session is not None:
                     session.cache_epoch += 1
-                    _sync_cache_key(model, session)
+                    if hasattr(model, "cache_key"):
+                        model.cache_key = session.cache_key
             if session is not None:
                 session.approvals = [list(k) for k in safety.memory]
                 extra_input = ephemeral_items(ws.root, plan)
                 session.persist()
             bus.emit("turn_end", turn=turn, tool_calls=len(calls))
-            # 计划被用户拒绝：这轮到此为止，等用户反馈后再改计划。
             if any(item.name == "plan" and item.is_error and "rejected" in item.output.lower() for item in batch):
                 stop_reason = "plan_rejected"
                 final_text = final_text or "plan rejected"
@@ -264,14 +238,12 @@ def run_agent(
                 break
             steers = queue.drain_steer() if queue else []
             if steers:
-                # steer 注入：作为新 user 消息并入上下文，下一轮模型就能看到。
                 bus.emit("steer_delivered", turn=turn, count=len(steers))
                 user_turn = True
                 display_turn += 1
             for msg in steers:
                 _push(items, session, {"role": "user", "content": msg})
     except KeyboardInterrupt:
-        # 运行中 Ctrl+C：中止后台 bash 作业，保留已完成内容，不抛异常。
         runtime.abort_running()
         stop_reason = "aborted"
         final_text = final_text or "interrupted"
@@ -290,7 +262,6 @@ def run_agent(
         bus.emit("error", message=str(exc))
 
     if compact and stop_reason in {"stop", "max_turns"}:
-        # 收尾时顺手紧凑：为下一个任务省输入 token。
         try:
             compacted, extra, stats = compact_history(
                 items,
@@ -314,12 +285,12 @@ def run_agent(
                     **stats.as_dict(),
                     epoch=session.cache_epoch if session is not None else 0,
                 )
-        except Exception as exc:  # 宽抓：紧凑出错不能丢已完成的 run
+        except Exception as exc:  # broad: a compact hiccup must never discard a finished run
             bus.emit("error", message=f"compact skipped: {exc}", transient=getattr(exc, "transient", False))
 
     final_manifest = workspace_manifest(ws.root)
     final_workspace_fingerprint = workspace_fingerprint(final_manifest)
-    changes = workspace_changes(initial_manifest, final_manifest)   # 工作区改了哪些文件
+    changes = workspace_changes(initial_manifest, final_manifest)
     bus.emit(
         "agent_end",
         turns=turns,
@@ -376,18 +347,16 @@ def run_agent(
 
 
 def _push(items: list[dict[str, Any]], session: Session | None, item: dict[str, Any]) -> None:
-    """追加一条消息到上下文（和会话树）。
-
-    to_view=False：`items` 就是 session.items 本身（run_agent 起的别名）——
-    上面的 append 已更新视图，树和文件只需补上新条目。"""
     items.append(item)
     if session is not None:
+        # to_view=False: `items` is session.items itself (aliased by
+        # run_agent) — the append above already updated the view; only the
+        # tree + file need the new entry.
         session.append_item(item, to_view=False)
         session.persist()
 
 
 def _sync_cache_key(model: ModelClient, session: Session | None) -> None:
-    """把会话的缓存键同步到模型客户端（纪元一变，prompt_cache_key 跟着变）。"""
     if session is not None and hasattr(model, "cache_key"):
         model.cache_key = session.cache_key
 
@@ -405,7 +374,6 @@ def _complete_with_overflow(
     session: Session | None = None,
     extra: list[dict[str, Any]] | None = None,
 ):
-    """调一次模型；上下文溢出（各 provider 报错措辞不同）时强制紧凑后重试一次。"""
     extra = extra or []
     _sync_cache_key(model, session)
     try:
@@ -414,7 +382,7 @@ def _complete_with_overflow(
         raise
     except Exception as exc:
         if not compact or not is_context_overflow(exc):
-            raise   # 不是溢出（或紧凑已关）：原样上抛
+            raise
         compacted, _extra, stats = compact_history(
             items,
             model,
@@ -435,11 +403,9 @@ def _complete_with_overflow(
 
 
 def _run_tools(runtime: ToolRuntime, calls: list[FunctionCall], bus: EventBus, turn: int) -> list[ToolResult]:
-    """执行一批工具调用：前后各拍一次工作区快照，发 start/end 审计事件。"""
     before = workspace_manifest(runtime.workspace.root)
     before_fp = workspace_fingerprint(before)
     for call in calls:
-        # 参数脱敏后发事件（密钥类字段不出现在日志里）。
         bus.emit(
             "tool_execution_start",
             turn=turn,

@@ -1,15 +1,9 @@
-"""终端 Markdown 渲染：把模型的 Markdown 回复转成带 ANSI 样式的终端文本。
-
-支持围栏代码块、标题、引用、列表、链接/加粗/斜体/行内代码、GFM 表格。
-表格按显示宽度对齐（中文字符按 2 宽算）。"""
-
 from __future__ import annotations
 
 import re
 
 from wheel_agent.ui import style
 
-# 各类 Markdown 语法的正则。
 _FENCE = re.compile(r"```(\w*)\n?(.*?)```", re.S)
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _CODE = re.compile(r"`([^`]+)`")
@@ -17,24 +11,22 @@ _ITALIC = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _OL = re.compile(r"^(\d+)\.\s+(.*)$")
 _TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
-# GFM 分隔行：可选竖线，每段只有 : - :（可有空格）。
-# 单破折号段是合法 GFM；像 "| - |" 这种数据行按规范是歧义的，
-# 与参考 GFM 解析器一致当分隔行处理。
+# GFM separator: optional pipes, every segment is only : - : (spaces allowed).
+# Single-dash segments are valid GFM; a data row like "| - |" is ambiguous per
+# spec and treated as a separator, same as reference GFM parsers.
 _TABLE_SEP = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 
 
 def _split_row(line: str) -> list[str]:
-    """把一行管道表格拆成单元格（去空白）。"""
     return [cell.strip() for cell in _TABLE_ROW.match(line).group(1).split("|")]
 
 
 def _is_table_row(line: str) -> bool:
-    """是管道行但不是虚线分隔行（分隔行也匹配 _TABLE_ROW）。"""
+    """A pipe row that is NOT the dashed separator (the separator also matches _TABLE_ROW)."""
     return bool(_TABLE_ROW.match(line)) and not _TABLE_SEP.match(line)
 
 
 def render_markdown(text: str) -> str:
-    """入口：按围栏代码块切段，块内走块级渲染，块间走代码块渲染。"""
     chunks: list[str] = []
     cursor = 0
     for match in _FENCE.finditer(text):
@@ -46,7 +38,6 @@ def render_markdown(text: str) -> str:
 
 
 def _render_fence(lang: str, body: str) -> str:
-    """渲染围栏代码块为带边框的暗色框（┌ │ └）。"""
     label = lang.strip() or "code"
     lines = body.rstrip("\n").splitlines() or [""]
     out = [style.dim(f"┌ {label}")]
@@ -56,7 +47,6 @@ def _render_fence(lang: str, body: str) -> str:
 
 
 def _render_inline(text: str) -> str:
-    """行内样式：链接（青色，只留文字）→加粗→行内代码→斜体。"""
     text = _LINK.sub(lambda m: style.cyan(m.group(1)), text)
     text = _BOLD.sub(lambda m: style.bold(m.group(1)), text)
     text = _CODE.sub(lambda m: style.yellow(m.group(1)), text)
@@ -65,7 +55,6 @@ def _render_inline(text: str) -> str:
 
 
 def _render_blocks(text: str) -> str:
-    """块级渲染：逐行识别表格/标题/引用/列表/有序号/普通段。"""
     if not text:
         return ""
     lines: list[str] = []
@@ -73,7 +62,7 @@ def _render_blocks(text: str) -> str:
     src = text.splitlines()
     while i < len(src):
         raw = src[i]
-        # 表格：表头行 + 分隔行 + 数据行，全是管道分隔。
+        # Tables: header row + separator row + body rows, all pipe-delimited.
         if _is_table_row(raw) and i + 1 < len(src) and _TABLE_SEP.match(src[i + 1]):
             j = i + 2
             while j < len(src) and _is_table_row(src[j]):
@@ -101,14 +90,14 @@ def _render_blocks(text: str) -> str:
 
 
 def _render_table(rows: list[str]) -> str:
-    """把管道表格渲染成带边框的网格，按显示宽度对齐。
+    """Render pipe-table rows as a bordered grid, aligned by display width.
 
-    列宽用原始文本算（从不用样式后的文本——ANSI 转义会干扰宽度计算）；
-    填充先按原始宽度算好再加样式，所以有没颜色对齐都不跑。
-    分隔行在这里丢弃（而不是调用方），表中间混进的分隔行能优雅降级。
-
-    边框用 ASCII：U+2500 框线字符在 CJK 终端按 2 宽、其他环境按 1 宽，
-    一旦列宽计算遇上中文 locale，unicode 网格就错位。"""
+    Column widths are computed from the raw cell text (never from styled
+    text, whose ANSI escapes would skew width math); padding is applied to
+    the raw width before styling, so alignment holds with colors on or off.
+    Separator rows are dropped here rather than by the caller, so a stray
+    separator mid-table degrades gracefully instead of rendering as data.
+    """
     parsed = [_split_row(row) for row in rows if _is_table_row(row)]
     if not parsed:
         return "\n".join(_render_inline(row) for row in rows)
@@ -119,7 +108,9 @@ def _render_table(rows: list[str]) -> str:
     for r in parsed:
         for c, cell in enumerate(r):
             widths[c] = max(widths[c], style.display_width(cell))
-    # 边框用 ASCII（见上面 docstring 说明）。
+    # ASCII borders (like style.rule_line): U+2500 box chars are East-Asian
+    # ambiguous — counted 2-wide on CJK terminals, 1-wide elsewhere — so a
+    # unicode grid misaligns the moment column math meets a zh locale.
     rule = [style.dim("-" * (w + 2)) for w in widths]
     hborder = style.dim("+") + style.dim("+").join(rule) + style.dim("+")
     out = [hborder]
@@ -127,8 +118,8 @@ def _render_table(rows: list[str]) -> str:
         cells = []
         for c, cell in enumerate(r):
             rendered = style.bold(_render_inline(cell)) if ridx == 0 else _render_inline(cell)
-            # 行内标记（反引号、链接 URL）会让样式后的文本变短；
-            # 按渲染后宽度对原始列宽补空格。
+            # Inline markup (backticks, link URLs) shrinks text after styling;
+            # pad by the RENDERED width against the raw-derived column width.
             pad = " " * max(0, widths[c] - style.display_width(rendered))
             cells.append(f" {rendered}{pad} ")
         out.append(style.dim("|") + style.dim("|").join(cells) + style.dim("|"))

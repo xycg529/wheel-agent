@@ -1,8 +1,3 @@
-"""replay：用录制的模型响应重跑一次运行，不发 API、不花钱。
-
-重跑后和原运行对比，给出 exact/behavioral/drift/error 四种状态；
-支持单 run 和整个 session 重放（先拷贝一份干净工作区）。"""
-
 from __future__ import annotations
 
 import json
@@ -20,7 +15,6 @@ from wheel_agent.core.types import RunResult
 
 
 def print_timeline(bus: EventBus) -> str:
-    """把一次运行的事件流压成人类可读的时间线文本。"""
     lines: list[str] = []
     for event in bus.load_events():
         kind = event.get("type")
@@ -58,17 +52,14 @@ def print_timeline(bus: EventBus) -> str:
 
 
 def recorded_scripts(bus: EventBus) -> list[list[dict[str, Any]]]:
-    """从 responses.jsonl 取录制的模型输出序列（ScriptedModel 的脚本）。"""
     return [row["output"] for row in bus.load_responses()]
 
 
 def _events(bus: EventBus, kind: str) -> list[dict[str, Any]]:
-    """按类型筛事件。"""
     return [event for event in bus.load_events() if event.get("type") == kind]
 
 
 def _tool_signature(bus: EventBus) -> list[dict[str, Any]]:
-    """工具调用签名序列（名称+参数+安全裁决），对比两次运行调了同样的工具没有。"""
     starts = _events(bus, "tool_execution_start")
     ends = _events(bus, "tool_execution_end")
     signatures: list[dict[str, Any]] = []
@@ -85,15 +76,10 @@ def _tool_signature(bus: EventBus) -> list[dict[str, Any]]:
 
 
 def _input_signature(bus: EventBus) -> list[dict[str, Any]]:
-    """每轮模型输入审计序列，对比两次运行喂给模型的输入是否一致。"""
     return [row.get("input_audit") or {} for row in bus.load_responses()]
 
 
 def _replay_status(source: EventBus, replayed: EventBus, target: RunResult) -> tuple[str, dict[str, Any]]:
-    """对比原运行与重跑，给出状态：
-
-    error（没跑到 agent_end）/ drift（工作区指纹变了）/
-    exact（工具、输入、停止原因全同）/ behavioral（有差异）。"""
     source_end = _events(source, "agent_end")[-1:]
     replay_end = _events(replayed, "agent_end")[-1:]
     if target.stop_reason in {"error", "api_error"} or not replay_end:
@@ -113,7 +99,6 @@ def _replay_status(source: EventBus, replayed: EventBus, target: RunResult) -> t
         "replay_workspace_fingerprint": replay_fp,
     }
     if source_fp and replay_fp and source_fp != replay_fp:
-        # 工作区终态不同：即使工具序列一样也算 drift（比如环境差异导致输出不同）。
         return "drift", details
     if tools_same and inputs_same and stop_same:
         return "exact", details
@@ -127,7 +112,6 @@ def replay_run(
     *,
     interactive: bool = False,
 ) -> tuple[str, RunResult]:
-    """重跑单个 run：用 ScriptedModel 回放录制的响应，返回（时间线, 结果）。"""
     source = load_run(runs_dir, run_id)
     timeline = print_timeline(source)
     scripts = recorded_scripts(source)
@@ -136,7 +120,7 @@ def replay_run(
         meta = json.loads(source.meta_path.read_text(encoding="utf-8"))
     provider = ProviderConfig(
         name=str(meta.get("provider") or "replay"),
-        api_key="",   # 录制的响应不用真 key
+        api_key="",
         base_url=str(meta.get("base_url") or ""),
         model=str(meta.get("model") or "recorded"),
     )
@@ -162,12 +146,10 @@ def replay_run(
     return timeline, result
 
 
-# 拷贝工作区时跳过的目录（工具产物/VCS/依赖）。
 _COPY_SKIP = {".wheel", ".wheel_runs", ".git", ".venv", "__pycache__", "node_modules"}
 
 
 def copy_workspace(src: str | Path, dest: str | Path) -> Path:
-    """把源工作区拷到 dest（先删旧的）；符号链接原样保留。"""
     src = Path(src).resolve()
     dest = Path(dest).resolve()
     if dest.exists():
@@ -178,8 +160,9 @@ def copy_workspace(src: str | Path, dest: str | Path) -> Path:
             continue
         target = dest / child.name
         if child.is_symlink():
-            # 符号链接原样保留：shutil.copy2/copytree 会跟随链接，
-            # 让 link -> .env 变成 .env 的真拷贝，重放工作区的指纹就和录制的对不上了。
+            # Preserve symlinks verbatim: shutil.copy2/copytree follow them,
+            # so `link -> .env` became a real copy of .env and the replay
+            # workspace fingerprint drifted from the recorded one.
             target.symlink_to(os.readlink(child))
         elif child.is_dir():
             shutil.copytree(child, target, ignore=shutil.ignore_patterns(*_COPY_SKIP), symlinks=True)
@@ -195,7 +178,6 @@ def replay_session(
     *,
     source_workspace: str | Path | None = None,
 ) -> list[RunResult]:
-    """重放整个 session 的所有 run（顺序执行），返回结果列表。"""
     run_ids = list_session_runs(session_id, runs_dir)
     if not run_ids:
         raise FileNotFoundError(f"no runs recorded for session {session_id}")

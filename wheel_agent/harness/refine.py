@@ -1,8 +1,3 @@
-"""/refine 持续学习流程：从当前轨迹提炼 harness 编辑提案。
-
-调模型产出 JSON 提案（create/update/delete），应用到 local/global 存储，
-支持回滚（/refine rollback <id>）。也解析 /refine 命令参数。"""
-
 from __future__ import annotations
 
 import json
@@ -23,7 +18,6 @@ from wheel_agent.harness.harness import (
 from wheel_agent.core.model import ModelClient, extract_text
 from wheel_agent.core.types import Item, Usage
 
-# 发给提炼模型的 system 指令：限定只能改 harness 条目、输出 JSON。
 REFINEMENT_INSTRUCTIONS = """You are Wheel's /refine continual harness subsystem.
 
 Improve the editable continual harness from the current trajectory.
@@ -55,16 +49,13 @@ Never edit source files. Output JSON only:
   ]
 }"""
 
-# 发给提炼模型的会话上下文上限（字符）。
 CONVERSATION_CHARS = 80_000
-# 模型没写完 JSON 时的错误提示。
 TRUNCATED_JSON = (
     "the model stopped before completing its JSON object; retry with a smaller request"
 )
 
 
 def parse_auto_refine_every(raw: str | None = None) -> int:
-    """解析 WHEEL_AUTO_REFINE：每多少用户轮自动 refine 一次；0/off 关闭，缺省 8。"""
     text = (raw if raw is not None else os.getenv("WHEEL_AUTO_REFINE", "8")).strip().lower()
     if text in {"0", "false", "no", "off"}:
         return 0
@@ -77,14 +68,12 @@ def parse_auto_refine_every(raw: str | None = None) -> int:
 
 
 def refine_due(user_turns: int, every: int, last_at: int) -> bool:
-    """是否到了该自动 refine 的时候（累计用户轮数 - 上次 refine 轮数 >= every）。"""
     if every <= 0 or user_turns < every:
         return False
     return user_turns - last_at >= every
 
 
 def parse_refine_args(args: str) -> dict[str, Any]:
-    """解析 /refine 命令参数：普通指令 / rollback <id>，都可带 --global。"""
     rest = (args or "").strip()
     global_ = False
     if rest.startswith("--global"):
@@ -95,7 +84,7 @@ def parse_refine_args(args: str) -> dict[str, Any]:
     match = re.match(r"^rollback\s+", rest)
     if match:
         rollback_id = rest[match.end() :].strip()
-        if rollback_id.endswith(" --global"):   # 支持 rollback <id> --global 写法
+        if rollback_id.endswith(" --global"):
             global_ = True
             rollback_id = rollback_id[: -len(" --global")].strip()
         if rollback_id == "--global" or not rollback_id:
@@ -105,10 +94,13 @@ def parse_refine_args(args: str) -> dict[str, Any]:
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
-    """从提炼模型的回复里把 JSON 对象捞回来。
+    """Recover the refiner's JSON object from its reply.
 
-    回退链：```json 围栏 → 整段文本 → 第一个 { 到最后一个 } 窗口。
-    模型经常把对象包在废话里，窗口解析是最后的救命招。"""
+    Fallback chain: ```json fence → whole-text object → first-{ to last-}
+    window. Models routinely wrap the object in prose; the window parse is
+    the last resort before giving up (or asking for the missing tail in
+    _complete_json).
+    """
     trimmed = (text or "").strip()
     if not trimmed:
         raise ValueError("refiner returned no text")
@@ -125,12 +117,11 @@ def extract_json_object(text: str) -> dict[str, Any]:
             if isinstance(value, dict):
                 return value
         except json.JSONDecodeError:
-            return _parse_json(trimmed[start:])   # 可能是尾部被截，走 _parse_json 报截断错
+            return _parse_json(trimmed[start:])
     return _parse_json(trimmed)
 
 
 def normalize_proposal(value: Any) -> dict[str, Any]:
-    """把模型返回的对象归一成标准提案结构（缺字段补默认，非 dict edit 丢掉）。"""
     record = value if isinstance(value, dict) else {}
     edits = record.get("edits") if isinstance(record.get("edits"), list) else []
     return {
@@ -151,10 +142,6 @@ def plan_refinement(
     rollback_id: str | None = None,
     global_: bool = False,
 ) -> tuple[dict[str, Any], str, str | None, Usage]:
-    """生成一份 refine 提案（或回滚提案）。
-
-    回滚模式：从历史记录找到目标，构造回滚提案，不调模型。
-    普通模式：拼上当前状态/历史/会话/作用域策略，调模型产出 JSON 提案。"""
     refinement_id = generate_refinement_id()
     usage = Usage()
     if rollback_id:
@@ -164,7 +151,7 @@ def plan_refinement(
         return rollback_proposal(target), refinement_id, target["id"], usage
     overview = _overview(state)
     history_text = _history_for_prompt(history)
-    conversation = serialize_items(items)[-CONVERSATION_CHARS:]   # 会话超限时只留尾部
+    conversation = serialize_items(items)[-CONVERSATION_CHARS:]
     scope_line = (
         "Requested refinement scope: global. Only propose stable cross-session lessons, "
         "durable user preferences, or explicitly project-qualified facts."
@@ -197,14 +184,9 @@ def run_refine(
     rollback_id: str | None = None,
     global_: bool = False,
 ) -> tuple[dict[str, Any], Usage]:
-    """端到端跑一次 refine：规划 → 应用 → 记历史。
-
-    合并 global+local 的历史；回滚时用目标自己的作用域；
-    非回滚带 baseline 做乐观并发检查。"""
-    by_id = {item["id"]: item for item in load_history(store.history_file(True))}
-    for item in load_history(store.history_file(False)):
-        by_id[item["id"]] = item
-    history = list(by_id.values())
+    local_hist = load_history(store.history_file(False))
+    global_hist = load_history(store.history_file(True))
+    history = _merge_history(global_hist, local_hist)
     apply_global = global_
     if rollback_id:
         hit = next((item for item in history if item.get("id") == rollback_id), None)
@@ -213,7 +195,7 @@ def run_refine(
         apply_global = hit.get("scope") == "global"
     target = store.target(apply_global)
     merged = store.merged()
-    baseline = snapshot_state(target)   # 规划前的快照，应用时做并发检查
+    baseline = snapshot_state(target)
     proposal, refinement_id, rollback_of, usage = plan_refinement(
         items,
         merged if not rollback_id else target,
@@ -229,14 +211,13 @@ def run_refine(
         refinement_id=refinement_id,
         rollback_of=rollback_of,
         scope="global" if apply_global else "local",
-        baseline=None if rollback_id else baseline,   # 回滚不做并发检查（它是恢复）
+        baseline=None if rollback_id else baseline,
     )
     store.record(result)
     return result, usage
 
 
 def format_refine_result(result: dict[str, Any]) -> str:
-    """把 refine 结果格式化成给人看的文本（+ 成功 / ! 失败）。"""
     applied = [row for row in result.get("appliedEdits") or [] if row.get("applied")]
     failed = [row for row in result.get("appliedEdits") or [] if not row.get("applied")]
     lines = [f"{result.get('scope', 'local')} {result['id']}: {result.get('summary') or ''}"]
@@ -259,7 +240,6 @@ def format_refine_result(result: dict[str, Any]) -> str:
 
 
 def _edit_text(row: dict[str, Any]) -> tuple[str, str]:
-    """从一条 edit 记录里取（标题, 内容），优先 after 再 before。"""
     after = row.get("after") if isinstance(row.get("after"), dict) else {}
     before = row.get("before") if isinstance(row.get("before"), dict) else {}
     source = after or before
@@ -269,10 +249,9 @@ def _edit_text(row: dict[str, Any]) -> tuple[str, str]:
 
 
 def _complete_json(model: ModelClient, prompt: str) -> tuple[str, Usage]:
-    """调提炼模型要 JSON。
-
-    refine 是后勤活：始终关推理档（effort=off），不管会话设置；
-    调完恢复（模型客户端和主循环共享）。"""
+    # Refinement is housekeeping: always run it with reasoning effort off,
+    # regardless of the session's setting, and restore it afterwards (the
+    # model client is shared with the main loop).
     old_effort = getattr(model, "effort", None)
     if old_effort is not None:
         model.effort = "off"
@@ -292,7 +271,6 @@ def _complete_json(model: ModelClient, prompt: str) -> tuple[str, Usage]:
 
 
 def _parse_json(candidate: str) -> dict[str, Any]:
-    """解析 JSON；区分“截断了”（可重试）和“格式不对”。"""
     try:
         value = json.loads(candidate)
     except json.JSONDecodeError as exc:
@@ -305,7 +283,6 @@ def _parse_json(candidate: str) -> dict[str, Any]:
 
 
 def _incomplete(candidate: str) -> bool:
-    """判断 JSON 是否不完整（括号/引号没闭合）→ 提示截断而非格式错。"""
     depth = 0
     in_string = False
     escaped = False
@@ -329,7 +306,6 @@ def _incomplete(candidate: str) -> bool:
 
 
 def _overview(state: HarnessState) -> str:
-    """当前 harness 状态的概览文本（每类最多 40 条）。"""
     lines: list[str] = []
     for kind in state.entries:
         entries = list(state.entries[kind].values())
@@ -343,7 +319,6 @@ def _overview(state: HarnessState) -> str:
 
 
 def _history_for_prompt(history: list[dict[str, Any]]) -> str:
-    """最近 20 条 refine 历史的提示文本。"""
     if not history:
         return "No prior refinement history."
     blocks = []
@@ -357,3 +332,10 @@ def _history_for_prompt(history: list[dict[str, Any]]) -> str:
             f"[{item.get('id')}]{rollback} {item.get('summary')}\n{edits}\nExpected outcome: {item.get('expectedOutcome')}"
         )
     return "\n\n".join(blocks)
+
+
+def _merge_history(global_items: list[dict[str, Any]], local_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id = {item["id"]: item for item in global_items}
+    for item in local_items:
+        by_id[item["id"]] = item
+    return list(by_id.values())

@@ -1,6 +1,3 @@
-"""系统提示与每轮 ephemeral 上下文：把工作区规则、skills、harness、计划
-拼进 system 提示，或作为本轮临时 system 消息。"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +6,6 @@ from wheel_agent.core.context import format_project_xml, format_skills_xml, load
 from wheel_agent.harness.harness import HarnessState, format_harness_for_prompt
 from wheel_agent.core.plan import PlanStore
 
-# 每轮临时上下文的开头标记：告诉模型这不是用户消息。
 EPHEMERAL_MARK = "[ephemeral context — not a user message]"
 
 
@@ -20,10 +16,6 @@ def system_prompt(
     trusted: bool = True,
     harness: HarnessState | None = None,
 ) -> str:
-    """组装系统提示：agent 行为约定 + 项目指令 + skills + harness 持久化笔记。
-
-    文本里嵌着对模型的关键约束（bash 超时/后台任务、plan 工具的使用纪律、
-    破坏性命令必须先过 harness），改动这些句子会影响模型行为。"""
     root = Path(workspace).resolve()
     parts = [
         "You are a coding agent. Work only inside the workspace. "
@@ -58,7 +50,6 @@ def system_prompt(
     project = format_project_xml(load_project_files(root, home=home))
     if project:
         parts.append(project)
-    # skills 与 harness 块按需追加；harness 内容来自持久化 store，跨任务生效。
     skills = format_skills_xml(load_skills(root, home=home, trusted=trusted))
     if skills:
         parts.append(skills)
@@ -71,10 +62,6 @@ def ephemeral_items(
     workspace: str | Path,
     plan: PlanStore | None = None,
 ) -> list[dict[str, str]]:
-    """本轮 ephemeral system 消息：当前日期、工作目录、计划状态。
-
-    只影响本轮、不进历史——这样每轮的日期/计划状态总是新鲜的，
-    又不破坏历史前缀缓存。"""
     root = Path(workspace).resolve()
     lines = [
         EPHEMERAL_MARK,

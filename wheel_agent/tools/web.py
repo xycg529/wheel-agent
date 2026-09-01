@@ -1,7 +1,3 @@
-"""网页搜索与抓取：Exa（API 优先、免费 MCP 回退）/ Tavily 搜索，
-以及带 SSRF 防护的 URL 抓取（禁内网、逐跳校验重定向、只跟同源）。
-全部标准库实现，不依赖 requests。"""
-
 from __future__ import annotations
 
 import html as htmlmod
@@ -20,23 +16,24 @@ from urllib.parse import urljoin, urlparse
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 EXA_API_URL = "https://api.exa.ai/search"
 TAVILY_API_URL = "https://api.tavily.com/search"
-# Exa 托管 MCP 免费但按 IP 限匿名请求；收到 429 后整段冷却，
-# 不再白白多花几个往返。
+# Exa's hosted MCP is free but rate-limits anonymous requests per IP; after a
+# 429, skip it entirely for this long instead of burning round trips.
 MCP_RATE_COOLDOWN = 60.0
-MAX_BYTES = 1_000_000   # 单次抓取上限
-MAX_REDIRECTS = 5       # 重定向上限
-SNIPPET_MAX = 400       # 搜索摘要显示上限
+MAX_BYTES = 1_000_000
+MAX_REDIRECTS = 5
+SNIPPET_MAX = 400
 TIMEOUT = 30
 USER_AGENT = "wheel-agent/0.1 (+https://github.com/wheel)"
 
-# 免费 Exa MCP 被限流时的单调截止时间戳（配合 MCP_RATE_COOLDOWN）。
+# Monotonic deadline while the keyless Exa MCP is throttled (see MCP_RATE_COOLDOWN).
 _mcp_cooldown_until = 0.0
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    # 拒绝自动跟随重定向：默认 opener 会在 fetch_url 的逐跳 SSRF 主机检查
-    # 运行之前就跟掉 301/302/303/307（甚至跨源）。返回 None 让 urlopen 抛
-    # HTTPError，好让下面的手动重定向循环自己校验每一跳。
+    # Refuse to auto-follow redirects: the default opener would follow 301/
+    # 302/303/307 (even cross-origin) before fetch_url's per-hop SSRF host
+    # check ever runs. Returning None makes urlopen raise HTTPError so the
+    # manual redirect loop below validates every hop itself.
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N803
         return None
 
@@ -49,7 +46,7 @@ class WebError(Exception):
 
 
 def _clip_snippet(text: str) -> str:
-    """把摘要压成单行并截到显示预算，超长加省略号。"""
+    """Whitespace-collapsed snippet truncated to the display budget, elided."""
     text = re.sub(r"\s+", " ", text or "").strip()
     if len(text) > SNIPPET_MAX:
         return text[: SNIPPET_MAX - 3] + "..."
@@ -57,9 +54,6 @@ def _clip_snippet(text: str) -> str:
 
 
 def search_web(query: str, *, num_results: int = 5, api_key: str | None = None) -> str:
-    """联网搜索：有 EXA_API_KEY 走 Exa API，否则走免费 Exa MCP，两者都失败再试 Tavily。
-
-    返回编号列表文本（标题/URL/摘要），供模型当工具结果读。"""
     query = query.strip()
     if not query:
         raise WebError("query is empty")
@@ -79,7 +73,7 @@ def search_web(query: str, *, num_results: int = 5, api_key: str | None = None) 
             errors.append(f"Exa MCP: {exc}")
             rows = []
     if errors and not rows:
-        rows = _try_search_tavily(query, num_results, errors)   # 两级 Exa 都不行时回退 Tavily
+        rows = _try_search_tavily(query, num_results, errors)
     if not rows:
         if errors:
             hint = (
@@ -101,7 +95,7 @@ def search_web(query: str, *, num_results: int = 5, api_key: str | None = None) 
 
 
 def _decode_body(raw: bytes, content_type: str) -> str:
-    """有声明 charset 时按声明解（gbk 页面当 utf-8 解会乱码），否则 utf-8 容错解。"""
+    """Decode with the declared charset when present (gbk pages would mojibake as utf-8)."""
     match = re.search(r"charset=([\w.\-]+)", content_type or "", re.I)
     if match:
         try:
@@ -111,22 +105,7 @@ def _decode_body(raw: bytes, content_type: str) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _redirect(current, location: str | None, redirects: int, *, missing: str, hint: bool, exc: BaseException | None = None):
-    """处理一跳重定向：校验目标 URL 且拒绝跨源；返回 (next_url, 跳数) 或抛 WebError。"""
-    if not location:
-        raise WebError(missing) from exc
-    target = _validate_url(urljoin(current.geturl(), location))
-    # 跨源重定向不跟：返回提示让用户/模型直接抓那个 URL，防重定向劫持。
-    if (target.scheme, target.hostname, target.port) != (current.scheme, current.hostname, current.port):
-        raise WebError(f"cross-origin redirect to {target.hostname} not followed" + ("; fetch that URL directly" if hint else "")) from exc
-    redirects += 1
-    if redirects > MAX_REDIRECTS:
-        raise WebError(f"exceeded {MAX_REDIRECTS} redirects") from exc
-    return target, redirects
-
-
 def fetch_url(url: str) -> str:
-    """抓取一个 URL 的文本：逐跳校验重定向、限大小、按内容类型转纯文本。"""
     current = _validate_url(url)
     redirects = 0
     while True:
@@ -139,20 +118,34 @@ def fetch_url(url: str) -> str:
             with _OPENER.open(req, timeout=TIMEOUT) as resp:
                 status = getattr(resp, "status", None) or resp.getcode()
                 if 300 <= int(status) < 400:
-                    current, redirects = _redirect(
-                        current, resp.headers.get("Location"), redirects,
-                        missing=f"redirect {status} without Location", hint=True,
-                    )
+                    location = resp.headers.get("Location")
+                    if not location:
+                        raise WebError(f"redirect {status} without Location")
+                    nxt = urljoin(current.geturl(), location)
+                    target = _validate_url(nxt)
+                    if (target.scheme, target.hostname, target.port) != (current.scheme, current.hostname, current.port):
+                        raise WebError(f"cross-origin redirect to {target.hostname} not followed; fetch that URL directly")
+                    redirects += 1
+                    if redirects > MAX_REDIRECTS:
+                        raise WebError(f"exceeded {MAX_REDIRECTS} redirects")
+                    current = target
                     continue
                 ctype_header = resp.headers.get("Content-Type") or ""
                 ctype = ctype_header.split(";")[0].strip().lower()
-                raw = resp.read(MAX_BYTES + 1)   # 多读 1 字节用于判断是否超限
+                raw = resp.read(MAX_BYTES + 1)
         except urllib.error.HTTPError as exc:
             if 300 <= exc.code < 400:
-                current, redirects = _redirect(
-                    current, exc.headers.get("Location") if exc.headers else None, redirects,
-                    missing=f"HTTP {exc.code}: {exc.reason}", hint=False, exc=exc,
-                )
+                location = exc.headers.get("Location") if exc.headers else None
+                if not location:
+                    raise WebError(f"HTTP {exc.code}: {exc.reason}") from exc
+                nxt = urljoin(current.geturl(), location)
+                target = _validate_url(nxt)
+                if (target.scheme, target.hostname, target.port) != (current.scheme, current.hostname, current.port):
+                    raise WebError(f"cross-origin redirect to {target.hostname} not followed") from exc
+                redirects += 1
+                if redirects > MAX_REDIRECTS:
+                    raise WebError(f"exceeded {MAX_REDIRECTS} redirects") from exc
+                current = target
                 continue
             raise WebError(f"HTTP {exc.code}: {exc.reason}") from exc
         except WebError:
@@ -168,7 +161,6 @@ def fetch_url(url: str) -> str:
 
 
 def _is_rate_limited(message: str) -> bool:
-    """从错误文本里认出限流（rate limit / 429）。"""
     lowered = (message or "").lower()
     return (
         "rate limit" in lowered
@@ -179,14 +171,13 @@ def _is_rate_limited(message: str) -> bool:
 
 
 def _note_rate_limit(message: str) -> None:
-    """被限流时记一个冷却截止时间，冷却期内直接跳过免费 MCP。"""
     global _mcp_cooldown_until
     if _is_rate_limited(message):
         _mcp_cooldown_until = time.monotonic() + MCP_RATE_COOLDOWN
 
 
 def _try_search_tavily(query: str, num_results: int, errors: list[str]) -> list[dict[str, str]]:
-    """Exa 失败/被限流时的回退 provider（镜像 pi-web-access 的级联策略）。"""
+    """Fallback provider when Exa fails or is rate-limited (mirrors pi-web-access cascades)."""
     key = os.getenv("TAVILY_API_KEY") or ""
     if not key:
         errors.append("Tavily fallback unavailable: TAVILY_API_KEY not set")
@@ -199,7 +190,6 @@ def _try_search_tavily(query: str, num_results: int, errors: list[str]) -> list[
 
 
 def _search_tavily(query: str, num_results: int, api_key: str) -> list[dict[str, str]]:
-    """调 Tavily 搜索 API，归一成 {title,url,snippet} 行。"""
     base = (os.getenv("TAVILY_BASE_URL") or "https://api.tavily.com").rstrip("/")
     payload = json.dumps(
         {"query": query, "search_depth": "basic", "max_results": num_results, "include_answer": "basic"}
@@ -226,7 +216,6 @@ def _search_tavily(query: str, num_results: int, api_key: str) -> list[dict[str,
 
 
 def _search_exa_api(query: str, num_results: int, api_key: str) -> list[dict[str, str]]:
-    """调 Exa 搜索 API；摘要优先用 highlights，没有再用 text。"""
     payload = json.dumps({"query": query, "type": "auto", "numResults": num_results}).encode("utf-8")
     req = urllib.request.Request(
         EXA_API_URL,
@@ -254,7 +243,6 @@ def _search_exa_api(query: str, num_results: int, api_key: str) -> list[dict[str
 
 
 def _search_exa_mcp(query: str, num_results: int) -> list[dict[str, str]]:
-    """调免费 Exa MCP 的 web_search_exa 工具（JSON-RPC）；冷却期内直接抛错。"""
     if time.monotonic() < _mcp_cooldown_until:
         raise WebError("Exa free MCP rate-limited (cooldown active); set EXA_API_KEY or TAVILY_API_KEY")
     payload = json.dumps(
@@ -285,7 +273,7 @@ def _search_exa_mcp(query: str, num_results: int) -> list[dict[str, str]]:
             detail += f" — {exc.read().decode('utf-8', 'replace')[:200]}"
         except Exception:
             pass
-        _note_rate_limit(detail)   # 可能是 429，记冷却
+        _note_rate_limit(detail)
         raise WebError(f"Exa MCP failed: {detail}") from exc
     except Exception as exc:
         raise WebError(f"Exa MCP failed: {exc}") from exc
@@ -317,7 +305,6 @@ def _search_exa_mcp(query: str, num_results: int) -> list[dict[str, str]]:
 
 
 def _parse_mcp_body(body: str) -> dict[str, Any]:
-    """解析 MCP 响应体：可能是 SSE（data: 行）也可能是裸 JSON。"""
     parsed: dict[str, Any] | None = None
     for line in body.splitlines():
         if not line.startswith("data:"):
@@ -347,7 +334,6 @@ def _parse_mcp_body(body: str) -> dict[str, Any]:
 
 
 def _mcp_text(parsed: dict[str, Any]) -> str:
-    """从 MCP 结果里拼出文本；isError 时抛 WebError。"""
     result = parsed.get("result") or {}
     chunks: list[str] = []
     for part in result.get("content") or []:
@@ -362,7 +348,6 @@ def _mcp_text(parsed: dict[str, Any]) -> str:
 
 
 def _parse_mcp_text_results(text: str) -> list[dict[str, str]]:
-    """把 MCP 返回的纯文本结果解析成 {title,url,snippet} 行（宽容多种格式）。"""
     rows: list[dict[str, str]] = []
     blocks = re.split(r"\n(?=\S+\nhttps?://)", text.strip()) if text.strip() else []
     if not blocks:
@@ -384,7 +369,6 @@ def _parse_mcp_text_results(text: str) -> list[dict[str, str]]:
 
 
 def _validate_url(url: str):
-    """SSRF 第一道：只允许 http/https、无凭据、非本机/内网名，且解析后是公网地址。"""
     try:
         parsed = urlparse(url)
     except Exception as exc:
@@ -398,12 +382,11 @@ def _validate_url(url: str):
         raise WebError("URL must include a hostname")
     if host.lower() in {"localhost", "127.0.0.1", "::1"} or host.lower().endswith(".local"):
         raise WebError(f"blocked host: {host}")
-    _assert_public_host(host)   # DNS 解析后逐 IP 校验，防 DNS 重绑定
+    _assert_public_host(host)
     return parsed
 
 
 def _assert_public_host(host: str) -> None:
-    """SSRF 第二道：DNS 解析后逐个 IP 拒绝私网/回环/链路本地/组播/保留地址。"""
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
@@ -411,7 +394,7 @@ def _assert_public_host(host: str) -> None:
     for info in infos:
         raw = info[4][0]
         try:
-            ip = ipaddress.ip_address(raw.split("%")[0])   # 去掉 IPv6 的 zone 后缀
+            ip = ipaddress.ip_address(raw.split("%")[0])
         except ValueError:
             continue
         if (
@@ -426,14 +409,11 @@ def _assert_public_host(host: str) -> None:
 
 
 def _looks_html(text: str) -> bool:
-    """无 Content-Type 时靠开头特征猜是不是 HTML。"""
     head = text.lstrip()[:200].lower()
     return "<html" in head or "<!doctype html" in head
 
 
 class _HTMLText(HTMLParser):
-    """HTML→纯文本：跳过 script/style/noscript，块级标签转换行。"""
-
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
@@ -441,7 +421,7 @@ class _HTMLText(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style", "noscript"}:
-            self._skip += 1   # 进一个要跳过的块，计数叠加
+            self._skip += 1
         if tag in {"p", "div", "br", "li", "h1", "h2", "h3", "tr"}:
             self.parts.append("\n")
 
@@ -456,7 +436,6 @@ class _HTMLText(HTMLParser):
 
 
 def html_to_text(source: str) -> str:
-    """HTML 转纯文本；解析器报错时退回粗暴地去标签。"""
     parser = _HTMLText()
     try:
         parser.feed(source)
@@ -464,6 +443,6 @@ def html_to_text(source: str) -> str:
     except Exception:
         return htmlmod.unescape(re.sub(r"<[^>]+>", " ", source))
     text = htmlmod.unescape("".join(parser.parts))
-    text = re.sub(r"[ \t]+\n", "\n", text)   # 清行尾空白、压多余空行
+    text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

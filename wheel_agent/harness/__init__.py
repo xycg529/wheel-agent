@@ -1,1 +1,1 @@
-"""持续学习：notes/memories 存储 + 经验提炼。"""
+"""Continual learning: notes/memories store + lesson extraction."""

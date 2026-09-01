@@ -1,16 +1,12 @@
-"""统一的推理档位刻度：各 provider 的档位名单归一到同一套 LEVELS，
-并提供钳制（不支持时向上/向下找最近可用档）与按 API 组装。"""
-
 from __future__ import annotations
 
 from typing import Iterable
 
-# 统一刻度跨 provider 复用。OpenAI Responses 把 off 拼作 none；
-# max 是 GLM/Zhipu 的最高档，与 xhigh 分开，避免 .env 名单被改写成 xhigh。
+# Unified reasoning-effort scale across providers. OpenAI Responses spells
+# "off" as "none". `max` is GLM/Zhipu's top tier; keep it distinct so .env
+# lists are not rewritten to xhigh.
 LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
-# 常见写法别名，normalize 时归一。
 ALIASES = {"none": "off", "x-high": "xhigh", "extra-high": "xhigh"}
-# 统一刻度 → API 字段值的映射（off 在 Responses API 里是 none）。
 API_EFFORT = {
     "off": "none",
     "minimal": "minimal",
@@ -23,13 +19,11 @@ API_EFFORT = {
 
 
 def normalize(level: str) -> str:
-    """把任意写法归一到统一刻度（大小写、别名）。"""
     key = level.strip().lower()
     return ALIASES.get(key, key)
 
 
 def parse_levels(raw: str) -> tuple[str, ...]:
-    """解析 .env 里逗号分隔的档位名单；未知档位直接报错，配置错误越早暴露越好。"""
     if not raw.strip():
         return ()
     out: list[str] = []
@@ -45,7 +39,7 @@ def parse_levels(raw: str) -> tuple[str, ...]:
 
 
 def infer_effort_levels(model: str) -> tuple[str, ...]:
-    """按模型名猜可用档位；空元组 = 非推理模型，完全不发 reasoning 参数。"""
+    """Guess which unified levels a model accepts. Empty = do not send reasoning."""
     name = model.lower()
     if any(tag in name for tag in ("gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-3.5", "deepseek-chat", "glm-4-flash")):
         return ()
@@ -63,9 +57,9 @@ def infer_effort_levels(model: str) -> tuple[str, ...]:
 
 
 def clamp_effort(requested: str, supported: Iterable[str]) -> str | None:
-    """请求的档位不支持时先向上找、再向下找；返回 None = 省略该参数。"""
+    """If the requested level isn't supported, clamp upward first, then downward. None = omit the parameter."""
     allowed = tuple(normalize(item) for item in supported)
-    allowed = tuple(item for item in allowed if item in LEVELS)   # 先剔除名单外的项
+    allowed = tuple(item for item in allowed if item in LEVELS)
     if not allowed:
         return None
     want = normalize(requested) if requested else "medium"
@@ -87,8 +81,7 @@ def clamp_effort(requested: str, supported: Iterable[str]) -> str | None:
 
 
 def reasoning_payload(requested: str, supported: Iterable[str]) -> dict[str, str] | None:
-    """组装发往 API 的 reasoning 字段；None = 该模型/档位不发送。"""
     clamped = clamp_effort(requested, supported)
-    if clamped is None or clamped == "off":   # 非推理模型或显式 off：不发，兼容所有端点
+    if clamped is None or clamped == "off":
         return None
     return {"effort": API_EFFORT[clamped], "summary": "detailed"}

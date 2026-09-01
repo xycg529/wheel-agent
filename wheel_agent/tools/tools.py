@@ -1,8 +1,3 @@
-"""工具层：工具声明（name/description/parameters/执行器）+ 运行时。
-
-ToolRuntime 负责参数校验、安全裁决、checkpoint 快照、截断，以及
-并行/串行执行调度。bash 支持前台（超时杀）和后台（job_id + 轮询/杀）。"""
-
 from __future__ import annotations
 
 import atexit
@@ -29,18 +24,13 @@ from wheel_agent.tools.web import WebError, fetch_url, search_web
 from wheel_agent.tools.workspace import Workspace
 
 OnUpdate = Callable[[str], None]
-# 工具执行器签名：(args, workspace, on_update) → 输出文本
 Executor = Callable[[dict[str, Any], Workspace, OnUpdate | None], str]
-# 执行模式：并行（只读类）/串行（写类，避免互踩）
 ExecutionMode = Literal["parallel", "sequential"]
-# 前台 bash 默认超时（秒），超时杀进程。
 FOREGROUND_TIMEOUT = 120
 
 
 @dataclass
 class _Job:
-    """一个后台 bash 作业的运行时状态。"""
-
     job_id: str
     proc: subprocess.Popen[str]
     log_path: Path
@@ -48,27 +38,22 @@ class _Job:
     notified: bool = False
 
 
-# 全局后台作业表 + 锁（进程内单例，跨任务共享，atexit 时清场）。
 JOBS: dict[str, _Job] = {}
 JOBS_LOCK = threading.Lock()
 
 
 @dataclass
 class ToolSpec:
-    """一个工具的完整声明：给模型看的 schema + 给运行时用的执行器与元信息。"""
-
     name: str
     description: str
     parameters: dict[str, Any]
     readonly: bool
     execute: Executor
     execution_mode: ExecutionMode = "sequential"
-    # 输出截断策略：head（保头）/tail（保尾）/none。
     truncate: Literal["head", "tail", "none"] = "none"
 
 
 def default_tools() -> list[ToolSpec]:
-    """内置工具集：文件读/列/搜/写/编、bash、联网搜索/抓取。"""
     return [
         ToolSpec(
             name="read",
@@ -235,8 +220,104 @@ def default_tools() -> list[ToolSpec]:
     ]
 
 
+def _harness_spec(execute: Executor) -> ToolSpec:
+    return ToolSpec(
+        name="harness",
+        description=(
+            "Persist a durable prompt note or memory in the continual harness. "
+            "kind=prompt is a behavioral policy; kind=memory is a fact/preference/decision. "
+            "Default scope is this session. Set global=true only for stable cross-session lessons. "
+            "Do not store one-off task progress. action=list shows current entries."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "create", "update", "delete"]},
+                "kind": {"type": "string", "enum": ["prompt", "memory"]},
+                "id": {"type": "string"},
+                "title": {"type": "string"},
+                "content": {"type": "string"},
+                "path": {"type": "string", "description": "Optional grouping path"},
+                "global": {"type": "boolean", "description": "Write the cross-session store"},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        readonly=False,
+        execute=execute,
+        execution_mode="sequential",
+    )
+
+
+def _plan_spec(execute: Executor) -> ToolSpec:
+    return ToolSpec(
+        name="plan",
+        description=(
+            "Replace the current task plan with the full list of steps. Send EVERY step each call. "
+            "Statuses: pending, in_progress, done. At most one in_progress. "
+            "For non-trivial work, think through the steps first, submit the plan, wait for approval, then edit files. "
+            "After approval, mark the current step in_progress, do it, then mark it done before the next. "
+            "If a plan was rejected, submit a revised plan before write/edit; do not start implementing."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
+                        },
+                        "required": ["content", "status"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["steps"],
+            "additionalProperties": False,
+        },
+        readonly=False,
+        execute=execute,
+        execution_mode="sequential",
+    )
+
+
+def _poll_spec(execute: Executor) -> ToolSpec:
+    return ToolSpec(
+        name="bash_poll",
+        description="Read output from a background bash job started with background=true. Pass the job_id.",
+        parameters={
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+        readonly=True,
+        execute=execute,
+        execution_mode="parallel",
+        truncate="tail",
+    )
+
+
+def _kill_spec(execute: Executor) -> ToolSpec:
+    return ToolSpec(
+        name="bash_kill",
+        description="Kill a background bash job by job_id.",
+        parameters={
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+            "additionalProperties": False,
+        },
+        readonly=False,
+        execute=execute,
+        execution_mode="sequential",
+    )
+
+
 def tool_schemas(tools: list[ToolSpec] | None = None) -> list[dict[str, Any]]:
-    """把工具声明转成发往模型的 function schema 列表。"""
     specs = tools or default_tools()
     return [
         {
@@ -250,8 +331,6 @@ def tool_schemas(tools: list[ToolSpec] | None = None) -> list[dict[str, Any]]:
 
 
 class ToolRuntime:
-    """工具运行时：持有工作区/安全门/计划/harness，提供 execute_batch 入口。"""
-
     def __init__(
         self,
         workspace: Workspace,
@@ -268,118 +347,24 @@ class ToolRuntime:
             workspace.root, interactive=safety.interactive
         )
         specs = list(tools or default_tools())
-        # plan 工具：非平凡任务先提交步骤、等批准再改文件。
         if not any(spec.name == "plan" for spec in specs):
-            specs.append(
-                ToolSpec(
-                    name="plan",
-                    description=(
-                        "Replace the current task plan with the full list of steps. Send EVERY step each call. "
-                        "Statuses: pending, in_progress, done. At most one in_progress. "
-                        "For non-trivial work, think through the steps first, submit the plan, wait for approval, then edit files. "
-                        "After approval, mark the current step in_progress, do it, then mark it done before the next. "
-                        "If a plan was rejected, submit a revised plan before write/edit; do not start implementing."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "steps": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "content": {"type": "string"},
-                                        "status": {"type": "string", "enum": ["pending", "in_progress", "done"]},
-                                    },
-                                    "required": ["content", "status"],
-                                    "additionalProperties": False,
-                                },
-                            }
-                        },
-                        "required": ["steps"],
-                        "additionalProperties": False,
-                    },
-                    readonly=False,
-                    execute=lambda a, w, u=None: self._plan(a),
-                    execution_mode="sequential",
-                )
-            )
+            specs.append(_plan_spec(lambda a, w, u=None: self._plan(a)))
         if not any(spec.name == "harness" for spec in specs):
-            # harness 工具：持久化 prompt/memory 笔记（持续学习）。
-            specs.append(
-                ToolSpec(
-                    name="harness",
-                    description=(
-                        "Persist a durable prompt note or memory in the continual harness. "
-                        "kind=prompt is a behavioral policy; kind=memory is a fact/preference/decision. "
-                        "Default scope is this session. Set global=true only for stable cross-session lessons. "
-                        "Do not store one-off task progress. action=list shows current entries."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string", "enum": ["list", "create", "update", "delete"]},
-                            "kind": {"type": "string", "enum": ["prompt", "memory"]},
-                            "id": {"type": "string"},
-                            "title": {"type": "string"},
-                            "content": {"type": "string"},
-                            "path": {"type": "string", "description": "Optional grouping path"},
-                            "global": {"type": "boolean", "description": "Write the cross-session store"},
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                    readonly=False,
-                    execute=lambda a, w, u=None: self._harness(a),
-                    execution_mode="sequential",
-                )
-            )
+            specs.append(_harness_spec(lambda a, w, u=None: self._harness(a)))
         self.tools = {spec.name: spec for spec in specs}
         self.on_update = on_update
         self.checkpoints = CheckpointStore.for_workspace(workspace.root)
         self._proc: subprocess.Popen[str] | None = None
         self._task_id: str | None = None
         self._decisions: dict[str, Any] = {}
-        # 给 bash 换上一个会记住当前进程的执行器（供 abort_running 杀）。
         if "bash" in self.tools and self.tools["bash"].execute is _bash:
             spec = self.tools["bash"]
             self.tools["bash"] = replace(
                 spec,
                 execute=lambda a, w, u=None: _bash(a, w, u, on_proc=self._set_proc),
             )
-        self.tools.setdefault(
-            "bash_poll",
-            ToolSpec(
-                name="bash_poll",
-                description="Read output from a background bash job started with background=true. Pass the job_id.",
-                parameters={
-                    "type": "object",
-                    "properties": {"job_id": {"type": "string"}},
-                    "required": ["job_id"],
-                    "additionalProperties": False,
-                },
-                readonly=True,
-                execute=lambda a, w, u=None: _bash_poll(a),
-                execution_mode="parallel",
-                truncate="tail",
-            ),
-        )
-        self.tools.setdefault(
-            "bash_kill",
-            ToolSpec(
-                name="bash_kill",
-                description="Kill a background bash job by job_id.",
-                parameters={
-                    "type": "object",
-                    "properties": {"job_id": {"type": "string"}},
-                    "required": ["job_id"],
-                    "additionalProperties": False,
-                },
-                readonly=False,
-                execute=lambda a, w, u=None: _bash_kill(a),
-                execution_mode="sequential",
-            ),
-        )
+        self.tools.setdefault("bash_poll", _poll_spec(lambda a, w, u=None: _bash_poll(a)))
+        self.tools.setdefault("bash_kill", _kill_spec(lambda a, w, u=None: _bash_kill(a)))
 
     def _set_proc(self, proc: subprocess.Popen[str]) -> None:
         self._proc = proc
@@ -389,32 +374,27 @@ class ToolRuntime:
         return self._task_id
 
     def begin_task(self) -> str:
-        """开一个 checkpoint 任务，返回 task_id（之后的快照都归它）。"""
         self._task_id = self.checkpoints.begin_task()
         return self._task_id
 
     def abort_running(self) -> None:
-        """杀当前正在跑的前台 bash 进程（Ctrl+C / /stop 时调）。"""
         proc = self._proc
         if proc is not None and proc.poll() is None:
             _kill(proc)
 
     def _plan(self, args: dict[str, Any]) -> str:
-        """plan 工具执行器：整体替换计划；被拒时转成 ValueError 供循环识别。"""
         try:
             return self.plan.replace(args.get("steps") or [])
         except PlanRejected as exc:
             raise ValueError(str(exc)) from exc
 
     def _harness(self, args: dict[str, Any]) -> str:
-        """harness 工具执行器：转发给 HarnessStore.dispatch。"""
         return self.harness.dispatch(args)
 
     def execute(self, call: FunctionCall) -> ToolResult:
         return self.execute_batch([call])[0]
 
     def execute_batch(self, calls: list[FunctionCall]) -> list[ToolResult]:
-        """执行一批工具调用：先逐个准备（校验+安全），再按执行模式分组调度。"""
         prepared: list[tuple[FunctionCall, ToolSpec | None, dict[str, Any] | None, ToolResult | None]] = []
         for call in calls:
             spec, args, early = self._prepare(call)
@@ -427,7 +407,6 @@ class ToolRuntime:
             if early is None and spec is not None and args is not None
         ]
         for group in _execution_groups(runnable):
-            # 同组并行（只读类），单独串行（写类）。
             sequential = group[0][2].execution_mode == "sequential" if group else True
             if sequential or len(group) <= 1:
                 for idx, call, spec, args in group:
@@ -441,7 +420,6 @@ class ToolRuntime:
         return [item if item is not None else ToolResult(call.call_id, call.name, "internal error", True) for item, (call, *_rest) in zip(results, prepared)]
 
     def _prepare(self, call: FunctionCall) -> tuple[ToolSpec | None, dict[str, Any] | None, ToolResult | None]:
-        """执行前准备：解析/校验参数 + 安全裁决；被拒直接返回错误结果。"""
         spec = self.tools.get(call.name)
         if spec is None:
             return None, None, ToolResult(call.call_id, call.name, f"unknown tool: {call.name}", is_error=True)
@@ -466,7 +444,6 @@ class ToolRuntime:
         return spec, args, None
 
     def _run(self, spec: ToolSpec, call: FunctionCall, args: dict[str, Any]) -> ToolResult:
-        """执行单个已放行的工具：先快照，再执行，再后处理（截断）。"""
         verdict = self._decisions.get(call.call_id)
         fields = {
             "safety_decision": getattr(verdict, "decision", ""),
@@ -477,7 +454,7 @@ class ToolRuntime:
         if blocked:
             return ToolResult(call.call_id, spec.name, blocked, is_error=True, **fields)
         try:
-            self._checkpoint(spec, args)   # 改文件前快照（供 undo）
+            self._checkpoint(spec, args)
             output = spec.execute(args, self.workspace, self.on_update)
             output = self._after(spec, output)
         except KeyboardInterrupt:
@@ -493,7 +470,6 @@ class ToolRuntime:
         return ToolResult(call.call_id, call.name, output, **fields)
 
     def _rejected_plan_block(self, spec: ToolSpec) -> str | None:
-        """上一个计划被拒后，拦截 write/edit，强制先提交新计划。"""
         if spec.name not in {"write", "edit"}:
             return None
         if self.plan.confirmed or not self.plan.rejected:
@@ -504,7 +480,6 @@ class ToolRuntime:
         )
 
     def _checkpoint(self, spec: ToolSpec, args: dict[str, Any]) -> None:
-        """为 write/edit/bash 存回滚快照；失败静默（不能阻塞主流程）。"""
         try:
             if spec.name in {"write", "edit"}:
                 raw = str(args.get("path") or "")
@@ -519,7 +494,6 @@ class ToolRuntime:
             return
 
     def _after(self, spec: ToolSpec, output: str) -> str:
-        """输出后处理：按工具声明截断；bash 的 exit= 行作为保留前缀不被截掉。"""
         if spec.truncate == "head":
             return apply(output, self.workspace.root, tail=False)
         if spec.truncate == "tail":
@@ -534,7 +508,6 @@ class ToolRuntime:
 
 
 def prepare_arguments(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
-    """宽容地校正参数类型：模型常把 array/object/boolean 发成字符串，这里转回。"""
     if "_parse_error" in args:
         raise ValueError(args["_parse_error"])
     props = spec.parameters.get("properties") or {}
@@ -561,7 +534,6 @@ def prepare_arguments(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_arguments(spec: ToolSpec, args: dict[str, Any]) -> None:
-    """按 schema 校验必填/未知字段/类型/enum；不合法抛 ValueError。"""
     schema = spec.parameters or {}
     props = schema.get("properties") or {}
     for key in schema.get("required") or []:
@@ -594,8 +566,6 @@ def validate_arguments(spec: ToolSpec, args: dict[str, Any]) -> None:
 def _execution_groups(
     runnable: list[tuple[int, FunctionCall, ToolSpec, dict[str, Any]]],
 ) -> list[list[tuple[int, FunctionCall, ToolSpec, dict[str, Any]]]]:
-    """把可调度的调用按执行模式分组：连续的只读调用合并为一组并行，
-    每个写调用单独一组串行。"""
     groups: list[list[tuple[int, FunctionCall, ToolSpec, dict[str, Any]]]] = []
     current: list[tuple[int, FunctionCall, ToolSpec, dict[str, Any]]] = []
     current_seq: bool | None = None
@@ -623,8 +593,6 @@ def _execution_groups(
 
 
 def parse_function_calls(output: list[dict[str, Any]]) -> list[FunctionCall]:
-    """从模型输出的 items 里拆出工具调用；参数 JSON 解析失败不报错，
-    带 _parse_error 交给 prepare 阶段统一报。"""
     calls: list[FunctionCall] = []
     for item in output:
         if item.get("type") != "function_call":
@@ -650,7 +618,6 @@ def parse_function_calls(output: list[dict[str, Any]]) -> list[FunctionCall]:
 
 
 def _read(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """read 工具：读文件（带 offset/limit），输出 相对路径 + 片段。"""
     del on_update
     offset = int(args.get("offset") or 1)
     limit = args.get("limit")
@@ -661,14 +628,12 @@ def _read(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None
 
 
 def _ls(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """ls 工具：列一个目录。"""
     del on_update
     entries = ws.list_dir(str(args.get("path") or "."))
     return "\n".join(entries) if entries else "(empty)"
 
 
 def _grep(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """grep 工具：正则搜文件内容（rg 优先），命中行转成相对路径。"""
     del on_update
     target = ws.resolve(str(args.get("path") or "."))
     glob = str(args["glob"]) if args.get("glob") else None
@@ -684,14 +649,13 @@ def _grep(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None
         prefix = str(ws.root) + os.sep
         for line in hits:
             if line.startswith(prefix):
-                line = line[len(prefix) :]   # 剥掉工作区绝对前缀
+                line = line[len(prefix) :]
             rel_hits.append(line)
         return "\n".join(rel_hits)
     return "(no matches)"
 
 
 def _glob(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """glob 工具：按模式找文件路径（不读内容），超 limit 加截断提示。"""
     del on_update
     root = ws.resolve(str(args.get("path") or "."))
     if not root.is_dir():
@@ -707,7 +671,6 @@ def _glob(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None
 
 
 def _guard_write(ws: Workspace, raw: str) -> Path:
-    """写前守卫：解析路径并拒绝敏感路径（密钥/.env 等）。"""
     target = ws.resolve(raw)
     rel = ws.rel(target)
     if is_sensitive_path(rel) or is_sensitive_path(str(target)):
@@ -716,7 +679,6 @@ def _guard_write(ws: Workspace, raw: str) -> Path:
 
 
 def _write(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """write 工具：创建/覆盖文件；写 .py 时顺带 py_compile 检查。"""
     del on_update
     content = str(args["content"])
     _guard_write(ws, str(args["path"]))
@@ -725,7 +687,6 @@ def _write(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = Non
 
 
 def _edit(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """edit 工具：唯一匹配替换；保留原文件的换行符风格。"""
     del on_update
     path = _guard_write(ws, str(args["path"]))
     if not path.exists():
@@ -745,7 +706,6 @@ def _edit(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None
 
 
 def _edit_replace(original: str, old: str, new: str, replace_all: bool) -> str:
-    """核心替换：old 必须唯一命中（除非 replace_all），0 次/多次都报错。"""
     if old == "":
         raise ValueError("old_string must not be empty")
     count = original.count(old)
@@ -757,7 +717,6 @@ def _edit_replace(original: str, old: str, new: str, replace_all: bool) -> str:
 
 
 def _web_search(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """web_search 工具：联网搜索。"""
     del ws, on_update
     try:
         return search_web(str(args["query"]), num_results=int(args.get("num_results") or 5))
@@ -766,7 +725,6 @@ def _web_search(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None 
 
 
 def _web_fetch(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None = None) -> str:
-    """web_fetch 工具：抓一个公网 URL 的文本。"""
     del ws, on_update
     try:
         return fetch_url(str(args["url"]))
@@ -775,7 +733,6 @@ def _web_fetch(args: dict[str, Any], ws: Workspace, on_update: OnUpdate | None =
 
 
 def _py_compile(path: Any) -> str:
-    """写/编 .py 后用 py_compile 快检语法，失败附在输出末尾。"""
     target = Path(path)
     if target.suffix != ".py":
         return ""
@@ -797,7 +754,6 @@ def _bash(
     on_update: OnUpdate | None = None,
     on_proc: Callable[[subprocess.Popen[str]], None] | None = None,
 ) -> str:
-    """bash 工具：前台（超时杀，双线程读 stdout/stderr）或后台（job_id）执行。"""
     command = str(args["command"])
     background = bool(args.get("background"))
     proc = subprocess.Popen(
@@ -813,13 +769,12 @@ def _bash(
     if background:
         return _start_job(proc, command, ws)
     if on_proc:
-        on_proc(proc)   # 记下进程，供 abort_running 杀
+        on_proc(proc)
     timeout = int(args.get("timeout") or FOREGROUND_TIMEOUT)
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
 
     def reader(stream: Any, bucket: list[str]) -> None:
-        """逐行读一个流，累进 bucket 并回调 on_update（供 UI 实时显示）。"""
         try:
             for line in iter(stream.readline, ""):
                 bucket.append(line)
@@ -851,9 +806,6 @@ def _bash(
 
 
 def _start_job(proc: subprocess.Popen[str], command: str, ws: Workspace) -> str:
-    """把进程转入后台作业：输出写日志文件，返回 job_id 提示。
-
-    后台作业跨回合存活，由 bash_poll/bash_kill 管理，atexit 时统一清场。"""
     job_id = f"job_{token_hex(4)}"
     log_path = Path(ws.root) / ".wheel" / "outputs" / f"{job_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -862,7 +814,6 @@ def _start_job(proc: subprocess.Popen[str], command: str, ws: Workspace) -> str:
     lock = threading.Lock()
 
     def reader(stream: Any) -> None:
-        """逐行写日志（加锁，两个流共享一个文件句柄）。"""
         try:
             for line in iter(stream.readline, ""):
                 with lock:
@@ -879,7 +830,6 @@ def _start_job(proc: subprocess.Popen[str], command: str, ws: Workspace) -> str:
         thread.start()
 
     def closer() -> None:
-        """进程退出后收尾：等读完、关日志。"""
         proc.wait()
         for thread in readers:
             thread.join(timeout=1)
@@ -899,7 +849,6 @@ def _start_job(proc: subprocess.Popen[str], command: str, ws: Workspace) -> str:
 
 
 def _bash_poll(args: dict[str, Any]) -> str:
-    """bash_poll 工具：读后台作业当前状态与累计输出。"""
     job = _get_job(str(args["job_id"]))
     log = ""
     try:
@@ -916,7 +865,6 @@ def _bash_poll(args: dict[str, Any]) -> str:
 
 
 def _bash_kill(args: dict[str, Any]) -> str:
-    """bash_kill 工具：杀后台作业。"""
     job = _get_job(str(args["job_id"]))
     if job.proc.poll() is None:
         _kill(job.proc)
@@ -925,7 +873,6 @@ def _bash_kill(args: dict[str, Any]) -> str:
 
 
 def _get_job(job_id: str) -> _Job:
-    """按 job_id 取作业，支持前缀匹配（唯一命中时）。"""
     key = str(job_id)
     with JOBS_LOCK:
         job = JOBS.get(key)
@@ -938,7 +885,6 @@ def _get_job(job_id: str) -> _Job:
 
 
 def format_jobs() -> str:
-    """/jobs 命令用的作业列表文本。"""
     with JOBS_LOCK:
         jobs = list(JOBS.values())
     if not jobs:
@@ -957,7 +903,6 @@ def kill_job(job_id: str) -> str:
 
 
 def drain_job_events() -> list[str]:
-    """取走尚未通知过的“作业退出”事件（每作业只报一次）。"""
     events: list[str] = []
     with JOBS_LOCK:
         for job in JOBS.values():
@@ -970,7 +915,6 @@ def drain_job_events() -> list[str]:
 
 
 def kill_all_jobs() -> None:
-    """杀所有后台作业（atexit / 会话结束时调）。"""
     with JOBS_LOCK:
         jobs = list(JOBS.values())
         JOBS.clear()
@@ -980,7 +924,6 @@ def kill_all_jobs() -> None:
 
 
 def _kill(proc: subprocess.Popen[str]) -> None:
-    """SIGKILL 进程并短等回收；等不到也不报错。"""
     proc.kill()
     try:
         proc.wait(timeout=2)
@@ -989,11 +932,9 @@ def _kill(proc: subprocess.Popen[str]) -> None:
 
 
 def _bash_result(code: str, stdout_parts: list[str], stderr_parts: list[str]) -> str:
-    """拼前台 bash 结果：exit= + stdout + stderr。"""
     stdout = "".join(stdout_parts) or "(empty)"
     stderr = "".join(stderr_parts) or "(empty)"
     return f"exit={code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
 
 
-# 进程退出时杀光所有后台作业，不留孤儿进程。
 atexit.register(kill_all_jobs)

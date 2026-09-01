@@ -1,1 +1,1 @@
-"""工具层：工具集、安全/信任/审计、工作区、文件与网络访问。"""
+"""Tool layer: the tools, safety/trust/audit, workspace, file & web access."""

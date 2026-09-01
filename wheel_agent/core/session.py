@@ -1,8 +1,3 @@
-"""会话持久化：JSONL 日志 + 会话树（每条记录带 parent_id）。
-
-当前对话 = 从根到 leaf 的路径；紧凑是叠加层（overlay）不销毁原树；
-/tree、/fork 靠移动 leaf 指针实现零拷贝分支。"""
-
 from __future__ import annotations
 
 import json
@@ -18,19 +13,15 @@ from wheel_agent.core.model import item_text
 from wheel_agent.core.plan import PlanStore
 from wheel_agent.core.types import Item, Usage
 
-# 会话目录相对工作区的位置；文件命名 <session_id>.jsonl。
 SESSION_DIR = ".wheel/sessions"
-# 日志格式版本：v1 无 parent_id（加载时按写入顺序重建线性链）。
 CURRENT_VERSION = 2
 
 
 def _nid() -> str:
-    """8 位随机条目 ID。"""
     return uuid.uuid4().hex[:8]
 
 
 def session_dir(workspace: str | Path) -> Path:
-    """会话目录（不存在则建）。"""
     path = Path(workspace).resolve() / SESSION_DIR
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -38,8 +29,6 @@ def session_dir(workspace: str | Path) -> Path:
 
 @dataclass
 class SessionEntry:
-    """树里的一个节点：一条消息 + 父指针（parent_id 为 None 即根）。"""
-
     id: str
     parent_id: str | None
     item: Item
@@ -47,44 +36,36 @@ class SessionEntry:
 
 @dataclass
 class CompactOverlay:
-    """紧凑叠加层：摘要替换到 after_id 之前的全部历史。
-
-    原树不销毁——跳分支/回看旧内容时仍完整可用。"""
-
     summary: Item
     after_id: str
 
 
 @dataclass
 class Session:
-    """一个会话的完整状态：消息树 + 视图 + 紧凑叠加 + 计划 + 缓存纪元。"""
-
     session_id: str
     path: Path
     cwd: str
-    items: list[Item] = field(default_factory=list)   # 当前视图（发给模型的列表）
-    turn_offset: int = 0    # 已用回合数（turn 编号续计用）
-    usage: Usage = field(default_factory=Usage)        # 会话累计用量
+    items: list[Item] = field(default_factory=list)
+    turn_offset: int = 0
+    usage: Usage = field(default_factory=Usage)
     header: dict[str, Any] = field(default_factory=dict)
-    entries: dict[str, SessionEntry] = field(default_factory=dict)   # id → 节点
-    order: list[str] = field(default_factory=list)       # 写入顺序（持久化水位用）
-    leaf_id: str | None = None    # 当前叶子：当前对话 = 根→leaf 路径
+    entries: dict[str, SessionEntry] = field(default_factory=dict)
+    order: list[str] = field(default_factory=list)
+    leaf_id: str | None = None
     overlay: CompactOverlay | None = None
     plan: PlanStore = field(default_factory=PlanStore)
-    cache_epoch: int = 0   # 缓存纪元：历史变形成时自增，重算 prompt_cache_key
-    approvals: list[list[str]] = field(default_factory=list)   # 本会话已批准过的 bash 前缀
+    cache_epoch: int = 0
+    approvals: list[list[str]] = field(default_factory=list)
     compactions: int = 0
     last_compact: dict[str, Any] = field(default_factory=dict)
-    _saved: int = 0   # 已落盘的 order 长度（增量追加水位）
+    _saved: int = 0
 
     @property
     def cache_key(self) -> str:
-        """prompt 缓存分区键：纪元一变，前缀缓存重新计。"""
         return f"{self.session_id}:{self.cache_epoch}"
 
     @classmethod
     def create(cls, workspace: str | Path) -> "Session":
-        """新建空会话（文件在首次 persist 时才写）。"""
         root = Path(workspace).resolve()
         sid = new_run_id()
         path = session_dir(root) / f"{sid}.jsonl"
@@ -99,10 +80,6 @@ class Session:
 
     @classmethod
     def load(cls, path: str | Path) -> "Session":
-        """从 JSONL 恢复完整状态：头 + 全部节点 + 末尾 meta（用量/leaf/叠加/计划）。
-
-        加载时还会自愈：对“调了工具但结果没落盘就崩了”的孤儿调用，
-        补一条 interrupted 输出，避免下次请求被 API 拒（400）。"""
         path = Path(path)
         lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         if not lines:
@@ -129,8 +106,9 @@ class Session:
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
-                # 损坏的尾行：persist() 在 write 与 fsync 之间崩了会留下半行，
-                # 和其他日志读取一样跳过。
+                # Torn tail: persist() can crash between write() and fsync(),
+                # leaving a truncated last line. Skip it like the other journal
+                # readers (file_is_empty, first_user_preview_from_path) do.
                 continue
             kind = entry.get("type")
             if kind in {"item", "entry"}:
@@ -139,7 +117,8 @@ class Session:
                     continue
                 eid = str(entry.get("id") or _nid())
                 parent = entry.get("parent_id", entry.get("parentId"))
-                # v1 日志没有 parent_id：按写入顺序重建线性链。
+                # v1 journals had no parent_id; reconstruct the linear chain
+                # from write order.
                 if parent is None and version == 1:
                     parent = prev_id
                 node = SessionEntry(id=eid, parent_id=str(parent) if parent else None, item=item)
@@ -191,8 +170,10 @@ class Session:
         session.items = session.view_items()
         extras = unpaired_function_call_outputs(session.items)
         if extras:
-            # 崩在“工具已发出、结果未落盘”之间：API 会拒这种孤儿调用，
-            # 补一条 interrupted 输出让会话能干净恢复，而不是 400。
+            # A crash between dispatching a tool call and persisting its
+            # output leaves a call the API would reject on the next request;
+            # synthesize an "interrupted" outcome so the session resumes
+            # cleanly instead of 400-ing.
             for item in extras:
                 session.append_item(item, to_view=True)
             session.persist()
@@ -201,12 +182,11 @@ class Session:
 
     @classmethod
     def _session_files(cls, workspace: str | Path) -> list[Path]:
-        """会话文件列表，新的在前（按 mtime）。"""
+        """Session files, newest first (mtime order)."""
         return sorted(session_dir(workspace).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
 
     @classmethod
     def latest(cls, workspace: str | Path) -> "Session | None":
-        """最近一个非空会话（REPL 启动时自动恢复用）。"""
         for path in cls._session_files(workspace):
             if not cls.file_is_empty(path):
                 return cls.load(path)
@@ -214,7 +194,6 @@ class Session:
 
     @classmethod
     def list_previews(cls, workspace: str | Path, width: int = 48) -> list[tuple[str, str]]:
-        """会话列表 + 首条用户消息预览（/sessions 显示用），跳过空文件。"""
         rows: list[tuple[str, str]] = []
         for path in cls._session_files(workspace):
             preview = first_user_preview_from_path(path, width)
@@ -225,7 +204,6 @@ class Session:
 
     @classmethod
     def load_id(cls, workspace: str | Path, session_id: str) -> "Session":
-        """按 ID 加载，支持前缀匹配（唯一命中时）。"""
         path = session_dir(workspace) / f"{session_id}.jsonl"
         if not path.exists():
             matches = list(session_dir(workspace).glob(f"{session_id}*.jsonl"))
@@ -236,11 +214,10 @@ class Session:
         return cls.load(path)
 
     def append_item(self, item: Item, *, to_view: bool = True) -> str:
-        """追加一条消息到树上；返回条目 ID。
-
-        树永远记；视图（self.items）只在调用者没自己加过时才加——
-        run_agent 把 self.items 当作活动 prompt 列表直接 append，
-        所以它的 _push 传 to_view=False 避免重复。"""
+        # The tree (entries/order/leaf) always records the item; the view
+        # (self.items) only when the caller hasn't already appended it there.
+        # run_agent aliases self.items as its live prompt list and appends to
+        # it directly, so its _push passes to_view=False to avoid doubling.
         eid = _nid()
         node = SessionEntry(id=eid, parent_id=self.leaf_id, item=item)
         self.entries[eid] = node
@@ -251,7 +228,6 @@ class Session:
         return eid
 
     def path_ids(self) -> list[str]:
-        """根→leaf 的条目 ID 链（当前对话）。带环保护防脏数据死循环。"""
         ids: list[str] = []
         cur = self.leaf_id
         seen: set[str] = set()
@@ -265,7 +241,6 @@ class Session:
         return ids
 
     def view_items(self) -> list[Item]:
-        """当前视图：路径上的消息；有紧凑叠加时用摘要替换叠加点之前的部分。"""
         ids = self.path_ids()
         if self.overlay and self.overlay.after_id in ids:
             idx = ids.index(self.overlay.after_id)
@@ -273,10 +248,6 @@ class Session:
         return [self.entries[i].item for i in ids]
 
     def apply_compact(self, compacted: list[Item]) -> None:
-        """把紧凑结果应用到会话：设叠加层 + 自增缓存纪元 + 更新视图。
-
-        原树节点不变（只替换保留后缀里被改写的节点），
-        跳分支时仍能回到未压缩的完整历史。"""
         if not compacted:
             self.items = compacted
             return
@@ -293,7 +264,7 @@ class Session:
                     after_id = eid
                     break
         if after_id is None and self.path_ids():
-            after_id = self.path_ids()[-1]   # 定位不到保留后缀起点时，叠加到全路径之后
+            after_id = self.path_ids()[-1]
         if after_id:
             self.overlay = CompactOverlay(summary=summary, after_id=after_id)
             ids = self.path_ids()
@@ -303,8 +274,8 @@ class Session:
         self.items[:] = compacted
 
     def invalidate_cache(self) -> None:
-        """历史被带外修改（如 refine 应用了编辑）：自增缓存纪元并全量重写文件，
-        让下次模型调用用新键。"""
+        """History changed out-of-band (e.g. refine edits applied): bump the
+        cache epoch and rewrite the file so the next model call re-keys."""
         self.cache_epoch += 1
         self.persist(rewrite=True)
 
@@ -314,7 +285,6 @@ class Session:
         self._sync_ids(self.path_ids(), view)
 
     def _sync_ids(self, ids: list[str], view: list[Item]) -> None:
-        """把视图里的消息同步回树节点（逐 ID 对齐，缺节点跳过）。"""
         for eid, item in zip(ids, view):
             node = self.entries.get(eid)
             if node is None:
@@ -322,23 +292,20 @@ class Session:
             self.entries[eid] = SessionEntry(id=eid, parent_id=node.parent_id, item=item)
 
     def set_leaf(self, entry_id: str) -> None:
-        """把 leaf 指针移到指定条目（/tree 跳转的核心，零拷贝）。"""
         if entry_id not in self.entries:
             raise KeyError(f"unknown entry {entry_id}")
         self.leaf_id = entry_id
         if self.overlay and self.overlay.after_id not in self.path_ids():
-            self.overlay = None   # 跳出了叠加层生效范围：回到未压缩视图
+            self.overlay = None
         self.items[:] = self.view_items()
 
     def fork(self, entry_id: str | None = None) -> None:
-        """从指定条目（缺省最后一个 user 消息）分叉：leaf 移过去，之后追加即新分支。"""
         target = entry_id or self._last_user_id()
         if not target:
             raise ValueError("nothing to fork")
         self.set_leaf(target)
 
     def tree_rows(self) -> list[dict[str, Any]]:
-        """/tree 命令的行数据：每个 user 消息一行，带深度、是否在路径上、是否 leaf。"""
         path = set(self.path_ids())
         rows: list[dict[str, Any]] = []
         for eid in self.order:
@@ -369,7 +336,6 @@ class Session:
         return rows
 
     def _last_user_id(self) -> str | None:
-        """路径上最后一个 user 消息的条目 ID。"""
         for eid in reversed(self.path_ids()):
             if self.entries[eid].item.get("role") == "user":
                 return eid
@@ -377,7 +343,6 @@ class Session:
 
     @staticmethod
     def file_is_empty(path: Path) -> bool:
-        """文件里没有任何消息条目（只有头/meta）算空。"""
         try:
             lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         except OSError:
@@ -393,7 +358,6 @@ class Session:
 
     @classmethod
     def purge_empty(cls, workspace: str | Path) -> int:
-        """删掉全部空会话文件，返回删除数。"""
         removed = 0
         for path in list(session_dir(workspace).glob("*.jsonl")):
             if not cls.file_is_empty(path):
@@ -406,13 +370,15 @@ class Session:
         return removed
 
     def persist(self, rewrite: bool = False) -> None:
-        """落盘。默认增量追加：只写水位之后的条目 + 一条 meta（便宜，
-        尾行损坏也可恢复）。历史变形时（叠加/分支/新文件）全量重写——
-        只追加的日志只能长大，不能变形。写后 flush+fsync 保证断电不丢。"""
+        # Journal semantics: normally we APPEND only the entries past the
+        # _saved watermark (cheap, and a torn tail is recoverable on load).
+        # Rewrite the whole file when the history itself changed shape —
+        # a compact overlay, a branch/undo, or a brand-new file — because an
+        # append-only log can only grow, never re-shape.
         if not self.entries and not self.items:
             return
         if not self.entries and self.items:
-            self._rebuild_linear()   # 旧数据直接塞 items 的：重建线性树
+            self._rebuild_linear()
         elif self.entries and self.items and self.overlay is None:
             self._sync_path_items(self.items)
         if rewrite or not self.path.exists() or self.overlay is not None:
@@ -429,7 +395,6 @@ class Session:
         self._saved = len(self.order)
 
     def _rebuild_linear(self) -> None:
-        """items → 线性树（parent 串成链），用于无树数据的旧会话。"""
         prev: str | None = None
         for item in self.items:
             eid = _nid()
@@ -439,7 +404,6 @@ class Session:
         self.leaf_id = prev
 
     def _rewrite(self) -> None:
-        """全量重写：头 + 全部条目 + 尾部 meta，写后 fsync。"""
         header = dict(self.header or {})
         header.update(
             {
@@ -462,7 +426,6 @@ class Session:
         self._saved = len(self.order)
 
     def _entry_line(self, node: SessionEntry) -> str:
-        """一个节点的 JSONL 行。"""
         return (
             json.dumps(
                 {
@@ -478,7 +441,6 @@ class Session:
         )
 
     def _meta_line(self) -> str:
-        """尾部 meta 行：所有可变状态的快照（每次 persist 覆盖重放）。"""
         payload: dict[str, Any] = {
             "type": "meta",
             "turn_offset": self.turn_offset,
@@ -503,12 +465,10 @@ class Session:
         return json.dumps(payload, ensure_ascii=False) + "\n"
 
     def user_turns(self) -> int:
-        """真实用户轮数（摘要消息不算）。"""
         return sum(1 for item in self.items if item.get("role") == "user" and not is_summary_item(item))
 
 
 def preview_user_text(text: str, width: int = 48) -> str:
-    """会话列表的预览：skill 展开文本缩成 /skill:name，长文截断。"""
     body = (text or "").strip()
     if body.startswith("<skill"):
         name = ""
@@ -532,7 +492,6 @@ def preview_user_text(text: str, width: int = 48) -> str:
 
 
 def unpaired_function_call_outputs(items: list[Item]) -> list[Item]:
-    """找出“有调用无结果”的孤儿工具调用（崩溃残留），为它们造 interrupted 输出。"""
     pending: dict[str, Item] = {}
     for item in items:
         kind = item.get("type")
@@ -558,7 +517,6 @@ def unpaired_function_call_outputs(items: list[Item]) -> list[Item]:
 
 
 def first_user_preview_from_path(path: Path, width: int = 48) -> str:
-    """不加载整个会话，只扫文件找第一条用户消息做预览。"""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:

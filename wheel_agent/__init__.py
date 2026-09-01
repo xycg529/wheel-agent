@@ -1,3 +1,3 @@
-"""Wheel：一个体量小但功能完整的编码 agent——循环绕着它转的轮子。"""
+"""Wheel: a minimal coding agent. The wheel the loop runs on."""
 
 __version__ = "0.1.0"

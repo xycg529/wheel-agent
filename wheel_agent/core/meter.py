@@ -1,12 +1,9 @@
-"""计量表：token 数缩写、模型价格表、缓存命中/成本计算、页脚计量文本。"""
-
 from __future__ import annotations
 
 from wheel_agent.core.types import Usage
 
 
 def compact_count(n: int) -> str:
-    """把 token 数缩写成 12.3k / 1.2M 样式（页脚空间有限，只留一位小数）。"""
     value = float(n)
     if abs(value) >= 1_000_000:
         text = f"{value / 1_000_000:.1f}M"
@@ -20,9 +17,7 @@ def compact_count(n: int) -> str:
 
 
 def infer_model_profile(model: str) -> tuple[int, float, float, float, float]:
-    """按模型名查（上下文窗口，输入/输出/缓存读/缓存写 美元价/每百万 token）。
-
-    .env 里的 <前缀>_* 变量可覆盖查表结果；未知模型返回零价（不计费）。"""
+    """context_window, input/output/cache_read/cache_write USD per 1M tokens."""
     name = model.lower()
     if "gpt-5.6" in name:
         return 272_000, 5.0, 30.0, 0.5, 6.25
@@ -40,30 +35,35 @@ def infer_model_profile(model: str) -> tuple[int, float, float, float, float]:
 
 
 def cache_hit_pct(usage: Usage) -> float:
-    """这批用量里缓存命中的百分比，恒在 0–100。
+    """Percent of this usage blob that was served from cache.
 
-    OpenAI 风格：cached ⊆ input_tokens（input 含缓存部分），命中 = cached/input。
-    一些代理把 input 报成未命中部分（cached > input），此时命中 = cached/(cached+input)。"""
+    OpenAI-style: cached ⊆ input_tokens.
+    Some proxies report input as uncached only (cached > input); then
+    hit = cached / (cached + input). Always clamped to 0–100.
+    """
     cached = max(usage.cached_tokens, 0)
     inp = max(usage.input_tokens, 0)
     if cached <= 0:
-        return 0.0   # 没有缓存命中
+        return 0.0
     if inp <= 0:
-        return 100.0  # cached > 0 保证非空，input 为 0 时全部来自缓存
+        return 100.0 if cached else 0.0
     if cached <= inp:
         return cached / inp * 100.0
     return cached / (cached + inp) * 100.0
 
 
 def cost_usd(usage: Usage, input_price: float, output_price: float, cache_read_price: float, cache_write_price: float) -> float:
-    """按四档价目算这批用量的美元成本；缓存命中部分按 cache_read 价计。"""
     cached = max(usage.cached_tokens, 0)
     inp = max(usage.input_tokens, 0)
-    # OpenAI 计费口径：input 含缓存命中时，命中部分只收 cache_read 价。
-    billed_in = inp - cached if cached <= inp else inp
+    if cached <= inp:
+        billed_in = inp - cached
+        cache_reads = cached
+    else:
+        billed_in = inp
+        cache_reads = cached
     return (
         billed_in / 1_000_000 * input_price
-        + cached / 1_000_000 * cache_read_price
+        + cache_reads / 1_000_000 * cache_read_price
         + usage.output_tokens / 1_000_000 * output_price
         + usage.cache_write_tokens / 1_000_000 * cache_write_price
     )
@@ -80,8 +80,6 @@ def format_meter(
     cache_write_price: float,
     compact_runs: int = 0,
 ) -> str:
-    """页脚计量表一行：↑输入 ↓输出 R缓存 命中率 成本 上下文占用 汇总。"""
-    # 优先展示最近一次调用的量（更贴近当前状态）；首次调用前退回总量。
     req = last if (last.input_tokens or last.output_tokens or last.cached_tokens) else total
     hit = cache_hit_pct(req)
     dollars = cost_usd(total, input_price, output_price, cache_read_price, cache_write_price)
